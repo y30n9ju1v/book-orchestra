@@ -31,18 +31,12 @@ class TestBookOrchestraImportsAndPrompts(unittest.TestCase):
         from methods.book_writer_with_plotting import (
             write_single_book as write_single_book_plot,
         )
-        from methods.paper_writer import write_single_paper
         from autoraters.agent_review import (
             perform_review_agentreview,
             perform_book_editorial_review,
         )
-        from autoraters import (
-            lit_review_quality,
-            sxs_paper_quality,
-            sxs_lit_review_quality,
-            citation_f1,
-        )
-        from utils.pdf_utils import load_book, load_paper, latex_to_markdown
+        from autoraters import sxs_book_quality
+        from utils.pdf_utils import load_book, latex_to_markdown
 
         self.assertIs(OutlineAgent, BookBlueprintAgent)
         self.assertIs(HybridLiteratureAgent, TechnicalResearchAgent)
@@ -50,16 +44,12 @@ class TestBookOrchestraImportsAndPrompts(unittest.TestCase):
         self.assertIs(ContentRefinementAgent, EditorialRefinementAgent)
         self.assertIs(PlottingAgent, TechnicalIllustrationAgent)
         self.assertIs(perform_review_agentreview, perform_book_editorial_review)
-        self.assertIs(load_book, load_paper)
+        self.assertTrue(callable(load_book))
         self.assertTrue(callable(write_single_book))
         self.assertTrue(callable(write_single_book_plot))
-        self.assertTrue(callable(write_single_paper))
         self.assertTrue(callable(run_batch_book_writeup))
         self.assertTrue(callable(latex_to_markdown))
-        self.assertTrue(hasattr(lit_review_quality, "rate_single_paper"))
-        self.assertTrue(hasattr(sxs_paper_quality, "rate_sxs_paper_quality"))
-        self.assertTrue(hasattr(sxs_lit_review_quality, "rate_sxs_lit_review"))
-        self.assertTrue(hasattr(citation_f1, "ReferenceF1V1Evaluator"))
+        self.assertTrue(hasattr(sxs_book_quality, "rate_sxs_book_quality"))
 
     def test_prompt_templates_and_integrity(self):
         from utils.prompt_utils import (
@@ -75,8 +65,9 @@ class TestBookOrchestraImportsAndPrompts(unittest.TestCase):
             content_refinement_agent_system_prompt,
         )
         from methods.prompts.format_agent import format_agent_system_prompt
-        from autoraters.prompts.lit_review_quality_prompts import (
-            lit_review_quality_system_prompt,
+        from autoraters.prompts.sxs_quality_prompts import (
+            sxs_book_quality_system_prompt,
+            sxs_ecosystem_quality_system_prompt,
         )
 
         self.assertEqual(TECHNICAL_BOOK_INTEGRITY_PROMPT, UNIVERSAL_NO_LEAKAGE_PROMPT)
@@ -93,8 +84,8 @@ class TestBookOrchestraImportsAndPrompts(unittest.TestCase):
         self.assertIn("10", formatted_lit)
         self.assertIn("8", formatted_lit)
 
-        formatted_quality = lit_review_quality_system_prompt.format(avg_citation_count=40)
-        self.assertIn("40", formatted_quality)
+        self.assertIn("book_1", sxs_book_quality_system_prompt)
+        self.assertIn("book_1", sxs_ecosystem_quality_system_prompt)
 
         self.assertIn("objectivesbox", section_writing_agent_prompt)
         self.assertIn("lstlisting", section_writing_agent_prompt)
@@ -143,10 +134,14 @@ class TestBookTemplatesAndExamples(unittest.TestCase):
         for fname in [
             "book_proposal.md",
             "technical_notes.md",
-            "idea_sparse.md",
-            "experimental_log.md",
         ]:
             self.assertTrue(os.path.exists(os.path.join(raw_dir, fname)))
+
+        # Verify legacy paper templates and CVPR assets are removed
+        self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "templates", "cvpr2025")))
+        self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "templates", "iclr2025")))
+        self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "paper_writing_cli.py")))
+        self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "assets", "overview.png")))
 
         fe_example = os.path.join(
             REPO_ROOT, "frontend", "examples", "it_book_example.json"
@@ -438,10 +433,6 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
                     side_effect=fake_gemini_with_contents,
                 ),
                 patch(
-                    "methods.agents.literature_review_agent.s2_title_search",
-                    return_value=None,
-                ),
-                patch(
                     "utils.llm_backend_utils.call_gemini_with_images",
                     side_effect=fake_gemini_with_images,
                 ),
@@ -468,7 +459,6 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
 
             self.assertTrue(success)
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.pdf")))
-            self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_paper.pdf")))
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.tex")))
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.md")))
             self.assertTrue(
@@ -492,7 +482,7 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
     def test_write_single_book_with_plotting_mocked(self):
         import base64
         from methods.book_writer_with_plotting import write_single_book
-        from utils.paper_banana_utils import _minimal_png_base64
+        from utils.diagram_plot_utils import _minimal_png_base64
 
         sample_outline = {
             "book_metadata": {
@@ -582,19 +572,19 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
                     side_effect=fake_gemini_contents,
                 ),
                 patch(
-                    "utils.paper_banana_utils.call_gemini_with_contents",
+                    "utils.diagram_plot_utils.call_gemini_with_contents",
                     side_effect=fake_gemini_contents,
                 ),
                 patch(
-                    "utils.paper_banana_utils.generate_image_with_gemini",
+                    "utils.diagram_plot_utils.generate_image_with_gemini",
                     return_value=sample_b64,
                 ),
                 patch(
-                    "utils.paper_banana_utils.critique_and_revise_figure",
+                    "utils.diagram_plot_utils.critique_and_revise_figure",
                     return_value=("White background diagram.", "No changes needed."),
                 ),
                 patch(
-                    "utils.paper_banana_utils.generate_figure_caption",
+                    "utils.diagram_plot_utils.generate_figure_caption",
                     return_value="Control and data plane architecture of AtlasGW.",
                 ),
                 patch(

@@ -70,7 +70,7 @@ from utils.gemini_utils import (
     parse_gemini_json_results,
     parse_gemini_latex_results,
 )
-from utils.paper_banana_utils import (
+from utils.diagram_plot_utils import (
     DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT,
     PLOT_PLANNER_AGENT_SYSTEM_PROMPT,
     PLOT_VISUALIZER_AGENT_SYSTEM_PROMPT,
@@ -665,7 +665,7 @@ async def run_book_orchestra_workflow(
         model=model_tier,
     )
     current_tex = parse_gemini_latex_results(str(draft_latex_raw))
-    raw_draft_tex_path = os.path.join(latex_writeup_dir, "raw_draft_paper.tex")
+    raw_draft_tex_path = os.path.join(latex_writeup_dir, "raw_draft_book.tex")
     with open(raw_draft_tex_path, "w", encoding="utf-8") as f:
         f.write(current_tex)
 
@@ -791,7 +791,7 @@ async def run_book_orchestra_workflow(
         if not new_tex:
             break
 
-        cur_name = f"refined_paper_{v_label}"
+        cur_name = f"refined_book_{v_label}"
         cur_tex_path = os.path.join(refinement_workdir, f"{cur_name}.tex")
         cur_pdf_path = os.path.join(refinement_workdir, f"{cur_name}.pdf")
         with open(cur_tex_path, "w", encoding="utf-8") as f:
@@ -865,12 +865,10 @@ async def run_book_orchestra_workflow(
         shutil.copy(final_valid_pdf_path, final_refined_pdf)
 
     final_book_pdf = os.path.join(base_dir, "final_book.pdf")
-    final_paper_pdf = os.path.join(base_dir, "final_paper.pdf")
     final_book_tex = os.path.join(base_dir, "final_book.tex")
     final_book_md = os.path.join(base_dir, "final_book.md")
 
     shutil.copy(final_refined_pdf, final_book_pdf)
-    shutil.copy(final_refined_pdf, final_paper_pdf)
     with open(final_book_tex, "w", encoding="utf-8") as f:
         f.write(current_tex)
     shutil.copy(final_book_tex, os.path.join(latex_writeup_dir, "main.tex"))

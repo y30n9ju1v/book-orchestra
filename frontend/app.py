@@ -146,22 +146,15 @@ def render_sidebar():
     ):
         _load_example_json("it_book_example.json")
 
-    if st.sidebar.button(
-        "Load Legacy CVPR Example", disabled=st.session_state.locked
-    ):
-        _load_example_json("cvpr_example.json")
-
-    models = ["gemini-3.1-pro-preview", "gemini-3-flash-preview"]
+    models = ["inherit", "pro", "flash"]
     selected_model = st.sidebar.selectbox(
-        "Select Authoring LLM", models, disabled=st.session_state.locked
+        "Select Authoring Model Tier", models, disabled=st.session_state.locked
     )
 
     templates = [
         "oreilly_style_book",
         "manning_in_action_book",
         "systems_handbook",
-        "cvpr2025",
-        "iclr2025",
     ]
     selected_template = st.sidebar.selectbox(
         "Select Book / Publisher Template",
@@ -804,10 +797,6 @@ else:
 
         if not st.session_state.running and st.session_state.get("run_directory"):
             pdf_path = os.path.join(st.session_state.run_directory, "final_book.pdf")
-            if not os.path.exists(pdf_path):
-                pdf_path = os.path.join(
-                    st.session_state.run_directory, "final_paper.pdf"
-                )
             md_path = os.path.join(st.session_state.run_directory, "final_book.md")
             latex_directory = os.path.join(
                 st.session_state.run_directory, "latex_writeup"
@@ -978,7 +967,7 @@ else:
                                     os.path.join(
                                         st.session_state.run_directory,
                                         "content_refinement_workdir",
-                                        f"refined_paper_{version_key}.pdf",
+                                        f"refined_book_{version_key}.pdf",
                                     ),
                                     os.path.join(
                                         st.session_state.run_directory,

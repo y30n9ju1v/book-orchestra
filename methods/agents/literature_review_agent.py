@@ -64,7 +64,6 @@ from utils.gemini_utils import (
     parse_gemini_latex_results,
     types,
 )
-from utils.scholar_utils import s2_title_search
 
 
 class CandidatePaper(BaseModel):
@@ -396,61 +395,24 @@ class HybridLiteratureAgent:
                 return
 
         try:
-            s2_data = s2_title_search(cand_title, cand_year, cutoff_date)
-
-            if s2_data:
-                if not self._is_paper_allowed(s2_data, cutoff_date):
-                    return
-
-                if not s2_data.get("abstract", ""):
-                    return
-
-                authors_list = [a["name"] for a in s2_data.get("authors", [])]
-                j_info = s2_data.get("journal") or {}
-
-                abstract_text = s2_data.get("abstract") or ""
-                if len(abstract_text) > 1500:
-                    abstract_text = abstract_text[:1500] + "... [Truncated]"
-
-                full_obj = PaperData(
-                    citation_key=self._generate_key(
-                        s2_data.get("authors", []),
-                        s2_data.get("year"),
-                        s2_data["title"],
-                    ),
-                    title=s2_data["title"],
-                    authors=authors_list,
-                    venue=s2_data.get("venue") or "Technical Publication / arXiv",
-                    year=s2_data.get("year") or cand_year or 2024,
-                    abstract=abstract_text,
-                    citation_count=s2_data.get("citationCount") or 0,
-                    found_in_section=task["section"],
-                    reason=cand_reason,
-                    journal=j_info.get("name"),
-                    volume=j_info.get("volume"),
-                    pages=j_info.get("pages"),
-                    publication_date=s2_data.get("publicationDate"),
-                )
-            else:
-                # Fallback for industry technical reports, RFCs, books, or S2 misses
-                year_val = int(cand_year) if cand_year else 2024
-                if not self._is_paper_allowed({"year": year_val}, cutoff_date):
-                    return
-                authors_list = cand_authors if cand_authors else ["Technical Authors"]
-                abstract_text = cand_summary or cand_reason or cand_title
-                full_obj = PaperData(
-                    citation_key=self._generate_key(
-                        authors_list, year_val, cand_title
-                    ),
-                    title=cand_title,
-                    authors=authors_list,
-                    venue=cand_venue or "Technical Report / Systems Literature",
-                    year=year_val,
-                    abstract=abstract_text,
-                    citation_count=0,
-                    found_in_section=task["section"],
-                    reason=cand_reason,
-                )
+            year_val = int(cand_year) if cand_year else 2024
+            if not self._is_paper_allowed({"year": year_val}, cutoff_date):
+                return
+            authors_list = cand_authors if cand_authors else ["Technical Authors"]
+            abstract_text = cand_summary or cand_reason or cand_title
+            full_obj = PaperData(
+                citation_key=self._generate_key(
+                    authors_list, year_val, cand_title
+                ),
+                title=cand_title,
+                authors=authors_list,
+                venue=cand_venue or "Technical Report / Systems Literature",
+                year=year_val,
+                abstract=abstract_text,
+                citation_count=0,
+                found_in_section=task["section"],
+                reason=cand_reason,
+            )
 
             final_norm_title = self._normalize_title(full_obj.title)
 

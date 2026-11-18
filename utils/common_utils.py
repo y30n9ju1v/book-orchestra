@@ -20,7 +20,7 @@ import os.path as osp
 def create_log_folder(
     prefix: str = "",
     date_str: str = "",
-    log_dir: str = "./logs/paper_writing",
+    log_dir: str = "./logs/book_writing",
 ):
     now = datetime.datetime.now()
     timestamp_str = now.strftime("%Y_%m_%d_%H_%M_%S")

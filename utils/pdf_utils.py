@@ -83,7 +83,7 @@ def _extract_pdf_text_raw_bytes(pdf_path: str) -> str:
         return ""
 
 
-def load_paper(pdf_path, num_pages=None, min_size=100):
+def load_book(pdf_path, num_pages=None, min_size=100):
     """Extracts text from a PDF file using available PDF backends."""
     text = ""
     if pymupdf is not None:
@@ -135,125 +135,6 @@ def load_paper(pdf_path, num_pages=None, min_size=100):
         return raw_text
 
     raise Exception(f"Text too short or unreadable from PDF: {pdf_path}")
-
-
-# Book-oriented alias
-load_book = load_paper
-
-
-def has_blacklist_words(text: str):
-    blacklists = ["corresponding author"]
-    for word in blacklists:
-        if word in text.lower():
-            return True
-    return False
-
-
-def parse_sections(json_data, output_folder=""):
-    if not output_folder:
-        output_folder = os.path.dirname(json_data)
-
-    output_path = os.path.join(output_folder, "paper_sections.json")
-    section_results = []
-
-    if "abstractText" in json_data:
-        abstract_data = json_data["abstractText"]["text"]
-        if abstract_data.startswith("Abstract"):
-            abstract_data = abstract_data[len("Abstract") :]
-        section_results.append({"title": "Abstract", "content": abstract_data})
-
-    section_data = json_data["sections"]
-    for section in section_data:
-        title = section["title"]["text"] if "title" in section else None
-
-        content = ""
-        for para in section["paragraphs"]:
-            if has_blacklist_words(para["text"]):
-                continue
-            content += para["text"]
-
-        if title:
-            section_results.append({"title": title, "content": content})
-        else:
-            section_results[-1]["content"] += content
-
-    with open(output_path, "w") as f:
-        json.dump(section_results, f, indent=4)
-        print(f"Dumped paper sections to {output_path}.")
-
-    return section_results
-
-
-papaer_text_to_reference_text_prompt_template = """
-You are a specialized technical bibliography extraction engine. Your task is to extract the "References" or "Bibliography" section from the raw text of a technical book or research paper and return it in a specific single-line string format.
-
-### INPUT DATA
-You will receive raw text extracted from a PDF. This text may contain:
-- Noise (headers, footers, page numbers).
-- Arbitrary line breaks (sentences broken across lines).
-- The body of the manuscript followed by the references.
-
-### INSTRUCTIONS
-1. **Locate:** Find the start of the "References" or "Bibliography" section. Ignore all text preceding this section.
-2. **Extract:** Identify individual reference entries. These typically start with bracketed numbers (e.g., [1], [2]) or bare numbers (1., 2.).
-3. **Clean:** - Merge multi-line citations into a single line. 
-   - Remove any page numbers or running headers that interrupt a citation.
-4. **Format:** Output the citations as a single continuous string. Ensure every citation starts with its bracketed ID (e.g., `[1]`). If the source text uses `1.` format, convert it to `[1]`.
-
-### OUTPUT FORMAT
-Your output must be a single string containing ONLY the references, formatted exactly as follows:
-"[1] First citation text [2] Second citation text [3] Third citation text [4] ... "
-
-### CONSTRAINTS
-- Do NOT output JSON, Markdown lists, or XML.
-- Do NOT output the word "References" or "Bibliography" at the start.
-- Do NOT output any conversational text (e.g., "Here are the references").
-- Do NOT change the content/wording of the citation titles or authors, only clean up the whitespace.
-
-Here is the manuscript text:
-[PAPER CONTENT]
-{paper_text}
-[END PAPER CONTENT]
-"""
-
-
-def extract_reference_from_pdf_text(
-    paper_text: str, model_name: str = "gemini-3.1-pro-preview"
-) -> str:
-    from utils.llm_backend_utils import call_llm_with_text_prompt
-
-    instructions = papaer_text_to_reference_text_prompt_template.format(
-        paper_text=paper_text
-    )
-    response_dict = call_llm_with_text_prompt(
-        prompt=instructions,
-        model_name=model_name,
-        check_parsed_response_not_none=False,
-        return_json=False,
-    )
-    return response_dict["raw_response"].strip()
-
-
-def get_paper_references_from_pdf(
-    pdf_path: str, model_name: str = "gemini-3.1-pro-preview"
-):
-    try:
-        paper_text = load_paper(pdf_path)
-        reference_text = extract_reference_from_pdf_text(
-            paper_text, model_name=model_name
-        )
-        if reference_text:
-            return reference_text
-        else:
-            print(
-                f"Method 2: Failed to extract references from {pdf_path}.\nReturn None for refernces."
-            )
-    except Exception as e:
-        print(
-            f"Method 2: Failed to extract references from {pdf_path} due to {str(e)}.\nReturn None for refernces."
-        )
-
-    return None
 
 
 def latex_to_markdown(latex_text: str) -> str:

@@ -56,16 +56,13 @@ def _finalize_book_artifacts(
     refined_pdf_path: str,
     section_writing_agent: SectionWritingAgent,
 ):
-    """Saves final_book.pdf, final_paper.pdf, final_book.tex, final_book.md, and modular chapters."""
+    """Saves final_book.pdf, final_book.tex, final_book.md, and modular chapters."""
     final_book_pdf = osp.join(base_dir, "final_book.pdf")
-    final_paper_pdf = osp.join(base_dir, "final_paper.pdf")
     shutil.copy(refined_pdf_path, final_book_pdf)
-    shutil.copy(refined_pdf_path, final_paper_pdf)
 
     refined_tex_candidates = [
         osp.join(refinement_workdir, "final_refined_book.tex"),
-        osp.join(refinement_workdir, "final_refined_paper.tex"),
-        osp.join(latex_writeup_dir, "raw_draft_paper.tex"),
+        osp.join(latex_writeup_dir, "raw_draft_book.tex"),
     ]
     refined_tex_path = next((p for p in refined_tex_candidates if osp.exists(p)), None)
     if refined_tex_path:
@@ -91,21 +88,19 @@ def write_single_book(
     latex_template_dir,
     idea_filename="book_proposal.md",
     experimental_log_filename="technical_notes.md",
-    writer_model_name: str = "gemini-3.1-pro-preview",
-    reflection_model_name: str = "gemini-3.1-pro-preview",
+    writer_model_name: str = "inherit",
+    reflection_model_name: str = "inherit",
     research_cutoff: str = "2026-11",
     target_audience: str = "Senior Software & Systems Engineers",
     book_style: str = "Practical Architecture & Production Engineering",
 ):
     latex_writeup_dir = osp.join(base_dir, "latex_writeup")
     pdf_file = osp.join(base_dir, "final_book.pdf")
-    legacy_pdf_file = osp.join(base_dir, "final_paper.pdf")
 
     if osp.exists(latex_writeup_dir):
         shutil.rmtree(latex_writeup_dir)
-    for fpath in (pdf_file, legacy_pdf_file):
-        if osp.exists(fpath):
-            os.remove(fpath)
+    if osp.exists(pdf_file):
+        os.remove(pdf_file)
 
     materials_dir = osp.join(base_dir, "raw_materials")
 
@@ -214,7 +209,7 @@ def write_single_book(
                 guidelines_path=guidelines_path,
                 model_name=writer_model_name,
             )
-            raw_draft_tex_path = osp.join(latex_writeup_dir, "raw_draft_paper.tex")
+            raw_draft_tex_path = osp.join(latex_writeup_dir, "raw_draft_book.tex")
             section_writing_agent.run(output_path=raw_draft_tex_path)
 
             # Step 4: Editorial Review Board & Refinement

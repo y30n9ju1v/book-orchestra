@@ -45,10 +45,10 @@ def write_single_book(
     latex_template_dir,
     idea_filename="book_proposal.md",
     experimental_log_filename="technical_notes.md",
-    writer_model_name: str = "gemini-3.1-pro-preview",
-    reflection_model_name: str = "gemini-3.1-pro-preview",
-    plotting_model_name: str = "gemini-3.1-pro-preview",
-    image_model_name: str = "gemini-3-pro-image-preview",
+    writer_model_name: str = "inherit",
+    reflection_model_name: str = "inherit",
+    plotting_model_name: str = "inherit",
+    image_model_name: str = "image-generator",
     research_cutoff: str = "2026-11",
     plotting_max_critic_rounds: int = 3,
     target_audience: str = "Senior Software & Systems Engineers",
@@ -56,15 +56,13 @@ def write_single_book(
 ):
     latex_writeup_dir = osp.join(base_dir, "latex_writeup")
     pdf_file = osp.join(base_dir, "final_book.pdf")
-    legacy_pdf_file = osp.join(base_dir, "final_paper.pdf")
 
     time_log = {"Start_Time_Absolute": time.time()}
 
     if osp.exists(latex_writeup_dir):
         shutil.rmtree(latex_writeup_dir)
-    for fpath in (pdf_file, legacy_pdf_file):
-        if osp.exists(fpath):
-            os.remove(fpath)
+    if osp.exists(pdf_file):
+        os.remove(pdf_file)
 
     materials_dir = osp.join(base_dir, "raw_materials")
     figures_dir = osp.join(latex_writeup_dir, "figures")
@@ -234,7 +232,7 @@ def write_single_book(
                 guidelines_path=guidelines_path,
                 model_name=writer_model_name,
             )
-            raw_draft_tex_path = osp.join(latex_writeup_dir, "raw_draft_paper.tex")
+            raw_draft_tex_path = osp.join(latex_writeup_dir, "raw_draft_book.tex")
             section_writing_agent.run(output_path=raw_draft_tex_path)
             time_log["SectionWritingAgent"] = time.time() - _t2
 

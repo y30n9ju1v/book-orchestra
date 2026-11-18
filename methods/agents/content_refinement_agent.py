@@ -17,7 +17,7 @@ import traceback
 import json
 import shutil
 
-from utils.pdf_utils import compile_latex, load_paper, pdf_to_grid_images
+from utils.pdf_utils import compile_latex, load_book, pdf_to_grid_images
 from utils.gemini_utils import (
     call_gemini_with_contents,
     parse_gemini_json_latex_response,
@@ -88,7 +88,7 @@ class ContentRefinementAgent:
             f" >> [EditorialReviewBoard] Generating feedback for {iteration_label} manuscript..."
         )
         try:
-            manuscript_text = load_paper(pdf_path=pdf_path)
+            manuscript_text = load_book(pdf_path=pdf_path)
 
             review = perform_review_agentreview(
                 text=manuscript_text,
@@ -260,7 +260,7 @@ Respond in JSON format with the following structure:
         for i in range(self.max_reflections):
             print(f"\n=== Refinement Iteration {i+1}/{self.max_reflections} ===")
 
-            cur_filename = f"refined_paper_v{i+1}"
+            cur_filename = f"refined_book_v{i+1}"
             cur_pdf_path = os.path.join(self.work_dir, f"{cur_filename}.pdf")
 
             previous_log_str = (
@@ -577,28 +577,21 @@ block.
                 traceback.print_exc()
 
         # Save Final Output
-        final_pdf_output_path = os.path.join(self.work_dir, "final_refined_paper.pdf")
-        final_tex_path = os.path.join(self.work_dir, "final_refined_paper.tex")
         final_book_pdf_path = os.path.join(self.work_dir, "final_refined_book.pdf")
         final_book_tex_path = os.path.join(self.work_dir, "final_refined_book.tex")
 
-        with open(final_tex_path, "w", encoding="utf-8") as f:
-            f.write(self.current_tex)
         with open(final_book_tex_path, "w", encoding="utf-8") as f:
             f.write(self.current_tex)
 
         if os.path.exists(final_valid_pdf_path):
-            shutil.copy(final_valid_pdf_path, final_pdf_output_path)
             shutil.copy(final_valid_pdf_path, final_book_pdf_path)
         else:
-            compile_latex(self.work_dir, final_pdf_output_path, "final_refined_paper")
-            if os.path.exists(final_pdf_output_path):
-                shutil.copy(final_pdf_output_path, final_book_pdf_path)
+            compile_latex(self.work_dir, final_book_pdf_path, "final_refined_book")
 
         print(
-            f" >> Process Complete. Final Score: {self.current_score}, Final PDF at: {final_pdf_output_path}"
+            f" >> Process Complete. Final Score: {self.current_score}, Final PDF at: {final_book_pdf_path}"
         )
-        return final_pdf_output_path
+        return final_book_pdf_path
 
 
 # Book-oriented alias

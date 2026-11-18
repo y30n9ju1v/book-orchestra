@@ -18,8 +18,7 @@ import base64
 import concurrent.futures
 
 from utils.common_utils import load_md_file
-from utils.paper_banana_utils import (
-    retrieve_few_shot_examples,
+from utils.diagram_plot_utils import (
     predict_figure_content,
     style_figure_content,
     generate_figure_visuals,
@@ -81,33 +80,20 @@ def process_single_figure(
         for filename in [
             "technical_notes.md",
             "book_proposal.md",
-            "experimental_log.md",
-            "idea_sparse.md",
-            "idea_dense.md",
-            "idea.md",
         ]:
             filepath = os.path.join(raw_materials_dir, filename)
             if os.path.exists(filepath):
                 raw_content += f"\n--- {filename} ---\n"
                 raw_content += load_md_file(filepath) or ""
 
-    # 1. Retrieve few-shot examples
-    print(f"[{fig_plan.get('figure_id', 'Unknown')}] Retrieving few-shot examples...")
     visual_intent = f"Title: {title}\nObjective: {objective}"
-    examples = retrieve_few_shot_examples(
-        task_name=task_name,
-        raw_content=raw_content,
-        description=visual_intent,
-        model_name=model_name,
-    )
 
-    # 2. Plan/Predict Content
+    # 1. Plan/Predict Content
     print(f"[{fig_plan.get('figure_id', 'Unknown')}] Planning figure content...")
     figure_desc = predict_figure_content(
         task_name=task_name,
         raw_content=raw_content,
         description=visual_intent,
-        examples=examples,
         model_name=model_name,
     )
 

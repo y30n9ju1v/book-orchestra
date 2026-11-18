@@ -485,7 +485,7 @@ def validate_latex_syntax(
     if brace_depth > 0:
         errors.append(f"Unclosed curly braces in LaTeX source (depth={brace_depth}).")
 
-    # Verify referenced figure files exist when cwd is provided
+    # Verify referenced figure files and BibTeX citation consistency when cwd is provided
     if cwd and os.path.isdir(cwd):
         for inc_match in re.finditer(
             r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", masked
@@ -502,6 +502,48 @@ def validate_latex_syntax(
                 errors.append(
                     f"Missing figure file referenced by \\includegraphics{{{fig_rel}}} in {cwd}."
                 )
+
+        cited_keys = sorted(
+            set(
+                k.strip()
+                for m in re.findall(
+                    r"\\(?:cite|citet|citep)(?:\[[^\]]*\])?\{([^}]+)\}", masked
+                )
+                for k in m.split(",")
+                if k.strip()
+            )
+        )
+        bib_match = re.search(r"\\bibliography\{([^}]+)\}", masked)
+        if cited_keys and bib_match:
+            bib_name = bib_match.group(1).strip()
+            if not bib_name.endswith(".bib"):
+                bib_name = f"{bib_name}.bib"
+            bib_path = os.path.join(cwd, bib_name)
+            if not os.path.exists(bib_path):
+                errors.append(
+                    f"Missing BibTeX file '{bib_name}' in {cwd} required by citations: {cited_keys}."
+                )
+            else:
+                try:
+                    with open(bib_path, "r", encoding="utf-8") as bf:
+                        bib_text = bf.read()
+                    if bib_text.count("{") != bib_text.count("}"):
+                        errors.append(
+                            f"Malformed BibTeX file '{bib_name}': unbalanced braces."
+                        )
+                    defined_bib_keys = set(
+                        k.strip()
+                        for k in re.findall(r"@\w+\s*\{\s*([^,\s]+)\s*,", bib_text)
+                    )
+                    missing_keys = [
+                        k for k in cited_keys if k not in defined_bib_keys
+                    ]
+                    if missing_keys:
+                        errors.append(
+                            f"Undefined citation key(s) {missing_keys} not found in '{bib_name}'."
+                        )
+                except Exception as e:
+                    errors.append(f"Error reading BibTeX file '{bib_name}': {e}")
 
     return len(errors) == 0, errors
 
@@ -651,12 +693,21 @@ def compile_latex(cwd, pdf_file, texfile_name="template", timeout=30) -> bool:
         for var in ["TEXINPUTS", "TEXMFHOME", "TEXMF", "TEXMFVAR", "TEXMFCONFIG"]:
             env.pop(var, None)
 
+        has_citations = bool(
+            re.search(r"\\(?:cite|citet|citep)(?:\[[^\]]*\])?\{[^}]+\}", tex_content)
+            and re.search(r"\\bibliography\{[^}]+\}", tex_content)
+        )
         commands = [
             ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"{texfile_name}.tex"],
-            ["bibtex", texfile_name],
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"{texfile_name}.tex"],
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"{texfile_name}.tex"],
         ]
+        if has_citations:
+            commands.append(["bibtex", texfile_name])
+        commands.extend(
+            [
+                ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"{texfile_name}.tex"],
+                ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"{texfile_name}.tex"],
+            ]
+        )
 
         execution_logs = []
 
@@ -694,10 +745,25 @@ def compile_latex(cwd, pdf_file, texfile_name="template", timeout=30) -> bool:
         final_pdflatex_log = execution_logs[-1] if execution_logs else {}
         final_rc = final_pdflatex_log.get("returncode", 1)
         final_stdout = final_pdflatex_log.get("stdout", "")
+
+        has_bibtex_error = False
+        if has_citations:
+            for log in execution_logs:
+                if log.get("cmd", "").startswith("bibtex"):
+                    b_out = (log.get("stdout") or "") + "\n" + (log.get("stderr") or "")
+                    if (
+                        log.get("returncode", 0) != 0
+                        or "error message" in b_out.lower()
+                        or "I didn't find a database entry for" in b_out
+                    ):
+                        has_bibtex_error = True
+
         has_fatal_tex_error = (
             final_rc != 0
+            or has_bibtex_error
             or "! LaTeX Error:" in final_stdout
             or "! Emergency stop" in final_stdout
+            or "LaTeX Warning: Citation `" in final_stdout
         )
 
         if (

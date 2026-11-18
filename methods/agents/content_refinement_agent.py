@@ -247,6 +247,23 @@ Respond in JSON format with the following structure:
             "experimental_log": self._read_file(self.experimental_log_path),
             "citations": self._read_file(self.citation_map_path),
         }
+        try:
+            citation_map_data = (
+                json.loads(context_files["citations"])
+                if context_files["citations"].strip()
+                else {}
+            )
+            allowed_citation_keys = (
+                set(citation_map_data.keys())
+                if isinstance(citation_map_data, dict)
+                else set()
+            )
+        except Exception:
+            allowed_citation_keys = set()
+
+        self.current_tex, _ = audit_and_clean_citations(
+            self.current_tex, allowed_citation_keys
+        )
 
         # --- STEP 0: Initial Compilation & Baseline Editorial Review ---
         print("\n=== Initial Baseline Review ===")
@@ -341,6 +358,13 @@ INSTRUCTION:
                 if not new_tex:
                     print(" >> Error: No LaTeX generated.")
                     break
+                new_tex, removed_cites = audit_and_clean_citations(
+                    new_tex, allowed_citation_keys
+                )
+                if removed_cites:
+                    print(
+                        f" >> [CitationAudit] Removed unverified citations in refinement v{i+1}: {removed_cites}"
+                    )
 
                 with open(
                     os.path.join(self.work_dir, f"{cur_filename}.tex"),
@@ -350,9 +374,9 @@ INSTRUCTION:
                     f.write(new_tex)
 
                 print(" >> Compiling revised manuscript...")
-                compile_latex(self.work_dir, cur_pdf_path, cur_filename)
+                compiled_rev_ok = compile_latex(self.work_dir, cur_pdf_path, cur_filename)
 
-                if not os.path.exists(cur_pdf_path):
+                if not compiled_rev_ok or not os.path.exists(cur_pdf_path):
                     print(" >> Compilation Failed. Retrying with previous version...")
                     continue
 
@@ -554,6 +578,14 @@ block.
                 else:
                     new_tex = raw_response.strip()
 
+                new_tex, removed_fmt_cites = audit_and_clean_citations(
+                    new_tex, allowed_citation_keys
+                )
+                if removed_fmt_cites:
+                    print(
+                        f" >> [CitationAudit] Removed unverified citations in formatting v{fmt_i+1}: {removed_fmt_cites}"
+                    )
+
                 candidate_tex_name = f"formatted_candidate_v{fmt_i+1}"
                 candidate_tex_path = os.path.join(
                     self.work_dir, f"{candidate_tex_name}.tex"
@@ -565,9 +597,11 @@ block.
                 with open(candidate_tex_path, "w", encoding="utf-8") as f:
                     f.write(new_tex)
 
-                compile_latex(self.work_dir, candidate_pdf_path, candidate_tex_name)
+                compiled_fmt_ok = compile_latex(
+                    self.work_dir, candidate_pdf_path, candidate_tex_name
+                )
 
-                if os.path.exists(candidate_pdf_path):
+                if compiled_fmt_ok and os.path.exists(candidate_pdf_path):
                     print(f" >> Formatting iteration {fmt_i+1} compiled successfully.")
                     self.current_tex = new_tex
                     final_valid_pdf_path = candidate_pdf_path

@@ -277,10 +277,9 @@ Here are the input materials for authoring the technical book manuscript.
             check_parsed_response_not_none=True,
         )
         cleaned_latex = response_dict["parsed_response"]
-        if citation_map:
-            cleaned_latex, _ = audit_and_clean_citations(
-                cleaned_latex, set(citation_map.keys())
-            )
+        cleaned_latex, _ = audit_and_clean_citations(
+            cleaned_latex, set(citation_map.keys()) if isinstance(citation_map, dict) else set()
+        )
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:

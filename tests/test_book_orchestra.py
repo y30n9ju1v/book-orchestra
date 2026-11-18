@@ -929,7 +929,7 @@ class TestReviewFixesAndSecurityHardening(unittest.TestCase):
             execute_plot_code_worker,
         )
 
-        # Malicious snippets must be rejected by AST validation and subprocess sandbox
+        # Malicious snippets (including NumPy & Matplotlib file I/O bypasses) must be rejected
         malicious_snippets = [
             "import os\nos.system('id')",
             "import subprocess\nsubprocess.Popen(['ls'])",
@@ -937,6 +937,11 @@ class TestReviewFixesAndSecurityHardening(unittest.TestCase):
             "__import__('os').listdir('.')",
             "().__class__.__base__.__subclasses__()",
             "import matplotlib.pyplot as plt\nplt.savefig('/tmp/evil.png')",
+            "import numpy as np\nnp.fromfile('/etc/passwd', dtype=np.uint8)",
+            "import numpy as np\nnp.load('/tmp/evil.npy')",
+            "import numpy as np\nnp.save('/tmp/evil.npy', np.zeros(4))",
+            "import numpy as np\nnp.savetxt('/tmp/evil.txt', np.zeros(4))",
+            "import numpy as np\nnp.zeros(4).tofile('/tmp/evil.bin')",
         ]
         for snippet in malicious_snippets:
             with self.assertRaises(UnsafePlotCodeError, msg=f"Snippet should fail AST check: {snippet}"):
@@ -1042,7 +1047,44 @@ ax.legend()
             )[0]
         )
 
-        # 6. Verify citation auditing strips hallucinated \cite keys
+        # 5b. Fake/reserved DOIs, fake/invalid URLs, invalid ISBN checksums, and author-surname-only matches MUST be rejected
+        self.assertFalse(
+            has_verifiable_identifier_or_grounding(
+                {"title": "Fake DOI Record", "year": 2024, "doi": "10.9999/not-a-real-record"}
+            )[0]
+        )
+        self.assertFalse(
+            has_verifiable_identifier_or_grounding(
+                {"title": "Fake URL Record", "year": 2024, "url": "https://fake.invalid.example/item"}
+            )[0]
+        )
+        self.assertFalse(
+            has_verifiable_identifier_or_grounding(
+                {"title": "Bad ISBN Checksum Book", "year": 2020, "isbn": "978-1449373329"}
+            )[0]
+        )
+        self.assertFalse(
+            has_verifiable_identifier_or_grounding(
+                {
+                    "title": "Completely Unrelated Fake Title",
+                    "year": 2023,
+                    "doi": "10.1145/3600006.3613165",
+                }
+            )[0]
+        )
+        # Author surname ("Kleppmann") appearing in notes without the book's actual title must NOT pass
+        self.assertFalse(
+            has_verifiable_identifier_or_grounding(
+                {
+                    "title": "Invented Nonexistent Book By Kleppmann",
+                    "authors": ["Martin Kleppmann"],
+                    "year": 2024,
+                },
+                grounding_text="As Kleppmann discussed in distributed systems.",
+            )[0]
+        )
+
+        # 6. Verify citation auditing strips hallucinated \cite keys (including when allowed set is empty!)
         allowed = {"Kwon2023PagedAttention", "Kleppmann2017DDIA"}
         tex_with_hallucination = (
             r"As shown in \cite{Kwon2023PagedAttention,Hallucinated2099Fake} and \cite{NonExistentKey}."
@@ -1053,6 +1095,10 @@ ax.legend()
         self.assertIn(r"\cite{Kwon2023PagedAttention}", cleaned_tex)
         self.assertNotIn("Hallucinated2099Fake", cleaned_tex)
         self.assertNotIn("NonExistentKey", cleaned_tex)
+
+        cleaned_empty, removed_empty = audit_and_clean_citations(tex_with_hallucination, set())
+        self.assertNotIn(r"\cite", cleaned_empty)
+        self.assertEqual(len(removed_empty), 3)
 
     def test_finding4_latex_syntax_validation_and_layout_diagnostics(self):
         from utils.pdf_utils import (
@@ -1122,22 +1168,112 @@ A & B & C & D & E & F \\
             self.assertEqual(len(files), 1)
             self.assertTrue(files[0].startswith("ch01_fresh_chapter"))
 
-        # Check no hardcoded /Users/yeongjun paths in skill, workflow, CLI, or README
-        for rel_path in (
-            os.path.join(".agents", "skills", "book-orchestra", "SKILL.md"),
-            os.path.join("workflows", "book_orchestra_workflow.py"),
-            os.path.join("workflows", "workflow.json"),
-            "book_writing_cli.py",
-            "README.md",
+        # Check no hardcoded /Users/yeongjun paths across ALL repository files
+        for root, dirs, files in os.walk(REPO_ROOT):
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in {".git", "__pycache__", ".pytest_cache", "node_modules"}
+            ]
+            for fname in files:
+                if not fname.endswith((".py", ".md", ".json", ".tex")):
+                    continue
+                if fname == "test_book_orchestra.py":
+                    continue
+                full_p = os.path.join(root, fname)
+                rel_p = os.path.relpath(full_p, REPO_ROOT)
+                with open(full_p, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                self.assertNotIn(
+                    "/Users/yeongjun",
+                    content,
+                    f"Hardcoded user path found in {rel_p}",
+                )
+
+    def test_re_review_agy_model_alias_and_multimodal_bridge_and_bibtex_check(self):
+        from utils.gemini_utils import (
+            resolve_agy_cli_model_name,
+            enable_agy_cli_runner,
+            get_antigravity_agent_runner,
+            get_antigravity_image_runner,
+            set_antigravity_agent_runner,
+            _extract_prompt_and_media,
+            types,
+        )
+        from utils.pdf_utils import compile_latex, validate_latex_syntax
+
+        # 1. Model alias resolution ('flash', 'pro', 'inherit')
+        with patch(
+            "utils.gemini_utils.list_agy_cli_models",
+            return_value=["gemini-3.8-flash-high", "gemini-3.8-pro-high"],
         ):
-            full_p = os.path.join(REPO_ROOT, rel_path)
-            with open(full_p, "r", encoding="utf-8") as f:
-                content = f.read()
-            self.assertNotIn(
-                "/Users/yeongjun",
-                content,
-                f"Hardcoded user path found in {rel_path}",
+            self.assertIsNone(resolve_agy_cli_model_name("inherit"))
+            self.assertEqual(
+                resolve_agy_cli_model_name("flash"), "gemini-3.8-flash-high"
             )
+            self.assertEqual(
+                resolve_agy_cli_model_name("pro"), "gemini-3.8-pro-high"
+            )
+
+        # When model discovery returns empty (e.g. offline sandbox), short aliases return None
+        # instead of passing invalid '--model flash' to agy CLI
+        with patch("utils.gemini_utils.list_agy_cli_models", return_value=[]):
+            self.assertIsNone(resolve_agy_cli_model_name("flash"))
+            self.assertIsNone(resolve_agy_cli_model_name("pro"))
+
+        # 2. enable_agy_cli_runner registers both text and image runners
+        set_antigravity_agent_runner(None)
+        try:
+            with patch(
+                "utils.gemini_utils.find_agy_cli_binary",
+                return_value="/usr/bin/true",
+            ):
+                ok = enable_agy_cli_runner()
+                self.assertTrue(ok)
+                self.assertIsNotNone(get_antigravity_agent_runner())
+                self.assertIsNotNone(get_antigravity_image_runner())
+        finally:
+            set_antigravity_agent_runner(None)
+
+        # 3. PDF binary parts are extracted into readable text instead of '[Attached binary part]'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample_tex = r"\documentclass{book}\begin{document}\chapter{UniquePdfTokenXYZ}\end{document}"
+            tex_p = os.path.join(tmpdir, "t.tex")
+            pdf_p = os.path.join(tmpdir, "t.pdf")
+            with open(tex_p, "w", encoding="utf-8") as f:
+                f.write(sample_tex)
+            compile_latex(tmpdir, pdf_p, "t")
+            with open(pdf_p, "rb") as f:
+                pdf_bytes = f.read()
+
+            prompt_text, _, tmp_files = _extract_prompt_and_media(
+                [
+                    types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                    types.Part.from_text(text="Review this book."),
+                ]
+            )
+            for tf in tmp_files:
+                if os.path.exists(tf):
+                    os.remove(tf)
+            self.assertIn("UniquePdfTokenXYZ", prompt_text)
+
+        # 4. Undefined citation key missing from references.bib fails validate_latex_syntax & compile_latex
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bib_path = os.path.join(tmpdir, "references.bib")
+            with open(bib_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "@book{Kleppmann2017DDIA,\n  title={DDIA},\n  author={Kleppmann},\n  year={2017}\n}\n"
+                )
+            bad_cite_tex = r"""\documentclass{book}
+\begin{document}
+\chapter{Test}
+Citing an undefined key \cite{MissingKey2099}.
+\bibliography{references}
+\end{document}
+"""
+            valid, errs = validate_latex_syntax(bad_cite_tex, cwd=tmpdir)
+            self.assertFalse(valid)
+            self.assertTrue(any("MissingKey2099" in e for e in errs))
 
 
 if __name__ == "__main__":

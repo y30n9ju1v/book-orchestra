@@ -21,7 +21,7 @@ with ZERO external Gemini/OpenAI API keys required.
 
 Usage inside Antigravity:
   run_workflow(
-      ScriptPath="/Users/yeongjun/Develops/book-orchestra/workflows/book_orchestra_workflow.py",
+      ScriptPath="workflows/book_orchestra_workflow.py",
       Args={
           "raw_materials_dir": "examples/distributed_llm_systems_book/raw_materials",
           "latex_template_dir": "templates/oreilly_style_book",
@@ -69,11 +69,13 @@ from autoraters.agent_review import (
 from utils.gemini_utils import (
     parse_gemini_json_results,
     parse_gemini_latex_results,
+    _fallback_diagram_png_base64,
 )
 from utils.diagram_plot_utils import (
     DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT,
     PLOT_PLANNER_AGENT_SYSTEM_PROMPT,
     PLOT_VISUALIZER_AGENT_SYSTEM_PROMPT,
+    PLOT_CRITIC_AGENT_SYSTEM_PROMPT,
     execute_plot_code_worker,
     _minimal_png_base64,
 )
@@ -343,6 +345,9 @@ async def run_book_orchestra_workflow(
     reflection_model_tier = workflow_args.get("reflection_model_name", model_tier)
     plotting_model_tier = workflow_args.get("plotting_model_name", model_tier)
     image_model_name = workflow_args.get("image_model_name", "image-generator")
+    plotting_max_critic_rounds = max(
+        0, int(workflow_args.get("plotting_max_critic_rounds", 3))
+    )
 
     raw_materials_dir = (
         raw_materials_rel
@@ -600,10 +605,9 @@ async def run_book_orchestra_workflow(
         model=model_tier,
     )
     updated_template_tex = parse_gemini_latex_results(str(lit_latex_raw))
-    if citation_map:
-        updated_template_tex, _ = audit_and_clean_citations(
-            updated_template_tex, set(citation_map.keys())
-        )
+    updated_template_tex, _ = audit_and_clean_citations(
+        updated_template_tex, set(citation_map.keys())
+    )
     with open(
         os.path.join(lit_output_dir, "updated_template.tex"), "w", encoding="utf-8"
     ) as f:
@@ -616,7 +620,8 @@ async def run_book_orchestra_workflow(
     plotting_plan = outline.get("plotting_plan", []) if use_plotting else []
     if plotting_plan:
         log_fn(
-            f"Generating {len(plotting_plan)} architecture diagrams and benchmark plots in parallel..."
+            f"Generating {len(plotting_plan)} architecture diagrams and benchmark plots in parallel "
+            f"(max_critic_rounds={plotting_max_critic_rounds})..."
         )
 
         async def _generate_single_visual(fig_plan: dict) -> dict:
@@ -646,34 +651,72 @@ async def run_book_orchestra_workflow(
                     role=f"Benchmark Plotter: {fig_id}",
                     model=plotting_model_tier,
                 )
-                b64_img = execute_plot_code_worker(str(code_resp)) or _minimal_png_base64()
+                current_code = str(code_resp)
+                b64_img = execute_plot_code_worker(current_code)
+
+                for critic_round in range(plotting_max_critic_rounds):
+                    if b64_img and critic_round > 0:
+                        break
+                    critic_prompt = (
+                        f"{PLOT_CRITIC_AGENT_SYSTEM_PROMPT}\n\n"
+                        f"Figure ID: {fig_id}\nTitle: {title}\nObjective: {objective}\n"
+                        f"Execution Succeeded: {bool(b64_img)}\n"
+                        f"Current Matplotlib Code:\n{current_code}\n\n"
+                        f"If the plot code is valid, self-contained, and matches the objective, reply 'No changes needed.' "
+                        f"Otherwise provide the corrected Python matplotlib code inside ```python ... ```."
+                    )
+                    critic_resp = await agent_fn(
+                        prompt=critic_prompt,
+                        schema={"type": "string"},
+                        role=f"Plot Critic ({fig_id} r{critic_round + 1})",
+                        model=plotting_model_tier,
+                    )
+                    critic_str = str(critic_resp).strip()
+                    if "no changes needed" in critic_str.lower() and b64_img:
+                        break
+                    if "```python" in critic_str:
+                        cand_b64 = execute_plot_code_worker(critic_str)
+                        if cand_b64:
+                            current_code = critic_str
+                            b64_img = cand_b64
+                            break
+
+                b64_img = b64_img or _fallback_diagram_png_base64(
+                    prompt=f"{title}\n{objective}"
+                )
                 with open(img_abs, "wb") as fh:
                     fh.write(base64.b64decode(b64_img))
             else:
-                diag_prompt = (
-                    f"{DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT}\n\n"
-                    f"Generate a crisp white-background technical architecture diagram for:\n"
-                    f"Title: {title}\nObjective: {objective}\n"
-                    f"Architecture Context:\n{proposal_text}\n\n"
-                    f"Save or return the image path."
-                )
-                try:
-                    diag_resp = await agent_fn(
-                        prompt=diag_prompt,
-                        schema={"type": "string"},
-                        role=f"Architecture Illustrator: {fig_id}",
-                        type_name=image_model_name,
+                diag_spec = f"Title: {title}\nObjective: {objective}\nArchitecture Context:\n{proposal_text}"
+                for critic_round in range(max(1, plotting_max_critic_rounds)):
+                    diag_prompt = (
+                        f"{DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT}\n\n"
+                        f"Generate a crisp white-background technical architecture diagram for:\n"
+                        f"{diag_spec}\n\n"
+                        f"Save or return the image path."
                     )
-                    # If image-generator returned a valid local file path, copy it; otherwise write fallback PNG
-                    cand_path = str(diag_resp).strip()
-                    if os.path.exists(cand_path) and os.path.isfile(cand_path):
-                        shutil.copy(cand_path, img_abs)
-                    else:
-                        with open(img_abs, "wb") as fh:
-                            fh.write(base64.b64decode(_minimal_png_base64()))
-                except Exception:
+                    try:
+                        diag_resp = await agent_fn(
+                            prompt=diag_prompt,
+                            schema={"type": "string"},
+                            role=f"Architecture Illustrator: {fig_id}",
+                            type_name=image_model_name,
+                        )
+                        cand_path = str(diag_resp).strip()
+                        if os.path.exists(cand_path) and os.path.isfile(cand_path):
+                            shutil.copy(cand_path, img_abs)
+                            break
+                    except Exception:
+                        pass
+                if not os.path.exists(img_abs) or os.path.getsize(img_abs) == 0:
                     with open(img_abs, "wb") as fh:
-                        fh.write(base64.b64decode(_minimal_png_base64()))
+                        fh.write(
+                            base64.b64decode(
+                                _fallback_diagram_png_base64(
+                                    prompt=f"{title}\n{objective}"
+                                )
+                            )
+                        )
 
             caption = f"{title}: {objective}".strip(": ")
             return {
@@ -747,10 +790,9 @@ async def run_book_orchestra_workflow(
         model=model_tier,
     )
     current_tex = parse_gemini_latex_results(str(draft_latex_raw))
-    if citation_map:
-        current_tex, _ = audit_and_clean_citations(
-            current_tex, set(citation_map.keys())
-        )
+    current_tex, _ = audit_and_clean_citations(
+        current_tex, set(citation_map.keys())
+    )
     raw_draft_tex_path = os.path.join(latex_writeup_dir, "raw_draft_book.tex")
     with open(raw_draft_tex_path, "w", encoding="utf-8") as f:
         f.write(current_tex)
@@ -850,6 +892,24 @@ async def run_book_orchestra_workflow(
     )
     worklogs = {}
 
+    review_sub_axes = (
+        "Technical_Depth",
+        "Practical_Utility",
+        "Code_and_Architecture_Quality",
+        "Pedagogical_Clarity",
+        "Structural_Coherence",
+        "Editorial_Polish",
+    )
+
+    def _extract_sub_scores(rev_dict: dict) -> dict:
+        out = {"Overall": float(rev_dict.get("Overall", 0.0))}
+        for ax in review_sub_axes:
+            try:
+                out[ax] = float(rev_dict.get(ax, 0.0))
+            except (TypeError, ValueError):
+                out[ax] = 0.0
+        return out
+
     for round_idx in range(max_reflections):
         v_label = f"v{round_idx + 1}"
         rev_prompt = (
@@ -874,8 +934,7 @@ async def run_book_orchestra_workflow(
         new_tex = parse_gemini_latex_results(str(rev_res.get("latex", "")))
         if not new_tex:
             break
-        if citation_map:
-            new_tex, _ = audit_and_clean_citations(new_tex, set(citation_map.keys()))
+        new_tex, _ = audit_and_clean_citations(new_tex, set(citation_map.keys()))
 
         cur_name = f"refined_book_{v_label}"
         cur_tex_path = os.path.join(refinement_workdir, f"{cur_name}.tex")
@@ -890,31 +949,79 @@ async def run_book_orchestra_workflow(
         new_review, new_score = await _run_editorial_review_board(
             cur_pdf_path, v_label
         )
-        if new_score >= current_score:
+        old_metrics = _extract_sub_scores(current_review)
+        new_metrics = _extract_sub_scores(new_review)
+        deltas = {
+            ax: new_metrics[ax] - old_metrics[ax] for ax in review_sub_axes
+        }
+        total_gain = sum(d for d in deltas.values() if d > 0)
+        total_drop = sum(abs(d) for d in deltas.values() if d < 0)
+
+        if new_score > current_score:
             worklogs[v_label] = {
                 "round": round_idx + 1,
                 "agent_plan": rev_res.get("worklog", {}),
                 "score_before": current_score,
                 "score_after": new_score,
-                "outcome": (
-                    "ACCEPTED_SCORE_INCREASE"
-                    if new_score > current_score
-                    else "ACCEPTED_NEUTRAL_IMPROVEMENT"
-                ),
+                "scores_before": old_metrics,
+                "scores_after": new_metrics,
+                "deltas": deltas,
+                "total_gain": total_gain,
+                "total_drop": total_drop,
+                "outcome": "ACCEPTED_SCORE_INCREASE",
             }
             current_tex = new_tex
             current_score = new_score
             current_review = new_review
             final_valid_pdf_path = cur_pdf_path
-        else:
+        elif new_score < current_score:
             worklogs[v_label] = {
                 "round": round_idx + 1,
                 "agent_plan": rev_res.get("worklog", {}),
                 "score_before": current_score,
                 "score_after": new_score,
+                "scores_before": old_metrics,
+                "scores_after": new_metrics,
+                "deltas": deltas,
+                "total_gain": total_gain,
+                "total_drop": total_drop,
                 "outcome": "REJECTED_SCORE_DECREASE",
             }
             break
+        else:
+            if total_drop > total_gain:
+                log_fn(
+                    f"Revision {v_label} kept Overall={new_score} but sub-axes degraded (drop={total_drop} > gain={total_gain}); reverting."
+                )
+                worklogs[v_label] = {
+                    "round": round_idx + 1,
+                    "agent_plan": rev_res.get("worklog", {}),
+                    "score_before": current_score,
+                    "score_after": new_score,
+                    "scores_before": old_metrics,
+                    "scores_after": new_metrics,
+                    "deltas": deltas,
+                    "total_gain": total_gain,
+                    "total_drop": total_drop,
+                    "outcome": "REJECTED_DEGRADATION",
+                }
+                break
+            worklogs[v_label] = {
+                "round": round_idx + 1,
+                "agent_plan": rev_res.get("worklog", {}),
+                "score_before": current_score,
+                "score_after": new_score,
+                "scores_before": old_metrics,
+                "scores_after": new_metrics,
+                "deltas": deltas,
+                "total_gain": total_gain,
+                "total_drop": total_drop,
+                "outcome": "ACCEPTED_NEUTRAL_IMPROVEMENT",
+            }
+            current_tex = new_tex
+            current_score = new_score
+            current_review = new_review
+            final_valid_pdf_path = cur_pdf_path
 
     with open(
         os.path.join(refinement_workdir, "content_refinement_worklog.json"),
@@ -949,10 +1056,9 @@ async def run_book_orchestra_workflow(
         model=reflection_model_tier,
     )
     polished_tex = parse_gemini_latex_results(str(fmt_raw)) or current_tex
-    if citation_map:
-        polished_tex, _ = audit_and_clean_citations(
-            polished_tex, set(citation_map.keys())
-        )
+    polished_tex, _ = audit_and_clean_citations(
+        polished_tex, set(citation_map.keys())
+    )
 
     # Validate & compile the polished candidate before accepting it
     candidate_fmt_tex = os.path.join(refinement_workdir, "formatted_candidate_v1.tex")

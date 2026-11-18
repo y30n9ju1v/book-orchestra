@@ -217,6 +217,54 @@ FORBIDDEN_PLOT_NAMES: Set[str] = {
     "builtins",
     "importlib",
     "inspect",
+    "io",
+    "tempfile",
+    "glob",
+    "mmap",
+}
+
+FORBIDDEN_PLOT_ATTRIBUTES: Set[str] = {
+    "system",
+    "popen",
+    "spawn",
+    "fork",
+    "kill",
+    "remove",
+    "unlink",
+    "rmdir",
+    "rmtree",
+    "listdir",
+    "scandir",
+    "walk",
+    "environ",
+    "modules",
+    "savefig",
+    "imread",
+    "imsave",
+    "rc_file",
+    "rc_file_defaults",
+    "fromfile",
+    "tofile",
+    "load",
+    "loads",
+    "save",
+    "savez",
+    "savez_compressed",
+    "savetxt",
+    "loadtxt",
+    "genfromtxt",
+    "fromregex",
+    "memmap",
+    "DataSource",
+    "recfromcsv",
+    "recfromtxt",
+    "open",
+    "fdopen",
+    "read",
+    "write",
+    "readline",
+    "readlines",
+    "writelines",
 }
 
 
@@ -227,7 +275,8 @@ class UnsafePlotCodeError(ValueError):
 def validate_plot_code_ast(code_clean: str) -> ast.AST:
     """
     Statically validates LLM-generated matplotlib code before execution.
-    Rejects non-allowlisted imports, dangerous builtins, file/network access, and dunder traversal.
+    Rejects non-allowlisted imports, dangerous builtins, file/network access
+    (including NumPy/Matplotlib file I/O APIs), and dunder traversal.
     """
     if not code_clean or not code_clean.strip():
         raise UnsafePlotCodeError("Empty plot code.")
@@ -254,7 +303,12 @@ def validate_plot_code_ast(code_clean: str) -> ast.AST:
                     f"Disallowed import from '{mod}' in plot code."
                 )
             for alias in node.names:
-                if alias.name == "*" or alias.name.startswith("__"):
+                if (
+                    alias.name == "*"
+                    or alias.name.startswith("__")
+                    or alias.name in FORBIDDEN_PLOT_ATTRIBUTES
+                    or alias.name in FORBIDDEN_PLOT_NAMES
+                ):
                     raise UnsafePlotCodeError(
                         f"Disallowed symbol import '{alias.name}' in plot code."
                     )
@@ -264,22 +318,7 @@ def validate_plot_code_ast(code_clean: str) -> ast.AST:
                     f"Disallowed identifier '{node.id}' in plot code."
                 )
         elif isinstance(node, ast.Attribute):
-            if node.attr.startswith("__") or node.attr in {
-                "system",
-                "popen",
-                "spawn",
-                "fork",
-                "kill",
-                "remove",
-                "unlink",
-                "rmdir",
-                "rmtree",
-                "listdir",
-                "walk",
-                "environ",
-                "modules",
-                "savefig",
-            }:
+            if node.attr.startswith("__") or node.attr in FORBIDDEN_PLOT_ATTRIBUTES:
                 raise UnsafePlotCodeError(
                     f"Disallowed attribute access '.{node.attr}' in plot code."
                 )
@@ -290,9 +329,11 @@ def validate_plot_code_ast(code_clean: str) -> ast.AST:
 def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
     """
     Sandboxed plot code execution worker:
-    1. Extracts Python code and validates its AST against strict allowlists.
+    1. Extracts Python code and validates its AST against strict allowlists
+       (blocking os/sys/open as well as NumPy/Matplotlib file I/O methods).
     2. Runs the code in an isolated child process (`python -I`) inside a temporary directory
-       with resource limits and restricted builtins.
+       with resource limits, disabled NumPy/Matplotlib file APIs, and a kernel-level
+       `sys.addaudithook` that blocks all file open/read/write, process, and network events.
     3. Reads the rendered JPEG image and returns its Base64 string (or None on error/violation).
     """
     match = re.search(r"```python(.*?)```", code_text or "", re.DOTALL)
@@ -310,6 +351,7 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
     runner_source = textwrap.dedent(
         """
         import builtins
+        import io
         import os
         import resource
         import sys
@@ -325,16 +367,40 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
         with open(code_path, "r", encoding="utf-8") as f:
             user_code = f.read()
 
+        # Pre-open output file descriptor before locking the runtime audit hook
+        out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        img_buf = io.BytesIO()
+
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        import numpy as np
+
         plt.close("all")
         plt.rcdefaults()
 
-        # Prevent user code from calling plt.show() or writing arbitrary files via plt.savefig
+        def _blocked_io(*a, **kw):
+            raise PermissionError("File I/O is disabled inside the plot sandbox.")
+
+        # Strip file I/O functions from matplotlib and numpy
         _real_savefig = plt.savefig
         plt.show = lambda *a, **kw: None
-        plt.savefig = lambda *a, **kw: None
+        plt.savefig = _blocked_io
+        plt.imread = _blocked_io
+        plt.imsave = _blocked_io
+        matplotlib.rc_file = _blocked_io
+
+        for _np_fn in (
+            "load", "loads", "save", "savez", "savez_compressed",
+            "savetxt", "loadtxt", "genfromtxt", "fromfile", "fromregex",
+            "memmap", "recfromcsv", "recfromtxt",
+        ):
+            if hasattr(np, _np_fn):
+                setattr(np, _np_fn, _blocked_io)
+        if hasattr(np, "lib") and hasattr(np.lib, "npyio"):
+            for _nio_fn in ("load", "save", "savez", "savez_compressed", "savetxt", "loadtxt", "genfromtxt", "fromregex", "DataSource"):
+                if hasattr(np.lib.npyio, _nio_fn):
+                    setattr(np.lib.npyio, _nio_fn, _blocked_io)
 
         ALLOWED = {
             "matplotlib",
@@ -369,12 +435,45 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
             safe_builtins.pop(bad, None)
         safe_builtins["__import__"] = _safe_import
 
+        # Warm up matplotlib font/renderer cache before locking OS file descriptors
+        _warm_fig, _warm_ax = plt.subplots(figsize=(1, 1))
+        _warm_ax.plot([0, 1], [0, 1])
+        _warm_ax.set_title("warmup")
+        _real_savefig( io.BytesIO(), format="jpeg", dpi=72)
+        plt.close("all")
+        plt.rcdefaults()
+
+        compiled_code = compile(user_code, "<plot_code>", "exec")
         exec_globals = {"__builtins__": safe_builtins, "__name__": "__main__"}
-        exec(compile(user_code, "<plot_code>", "exec"), exec_globals)
+
+        _USER_CODE_ACTIVE = [True]
+
+        def _audit_guard(event, args):
+            if not _USER_CODE_ACTIVE[0]:
+                return
+            if event in ("open", "os.system", "os.spawn", "os.posix_spawn", "os.fork", "os.forkpty", "subprocess.Popen", "ctypes.dlopen", "mmap.new"):
+                raise PermissionError(f"Sandbox audit hook blocked '{event}' during plot execution.")
+            if event.startswith(("os.", "shutil.", "socket.", "urllib.", "http.", "ftplib.", "subprocess.", "pathlib.", "glob.", "tempfile.")):
+                raise PermissionError(f"Sandbox audit hook blocked '{event}' during plot execution.")
+
+        # Kernel-level OS sandbox lock: setting RLIMIT_NOFILE to (0, 0) prevents the process
+        # (including C extensions like ndarray.tofile / fopen / socket) from opening ANY new file descriptor or socket.
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (0, 0))
+        except Exception:
+            pass
+
+        sys.addaudithook(_audit_guard)
+        try:
+            exec(compiled_code, exec_globals)
+        finally:
+            _USER_CODE_ACTIVE[0] = False
 
         if plt.get_fignums():
-            _real_savefig(out_path, format="jpeg", bbox_inches="tight", dpi=300)
+            _real_savefig(img_buf, format="jpeg", bbox_inches="tight", dpi=300)
             plt.close("all")
+            os.write(out_fd, img_buf.getvalue())
+        os.close(out_fd)
         """
     )
 
@@ -396,8 +495,9 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
                 "HOME": tmpdir,
             }
 
+            base_cmd = [sys.executable, "-I", runner_file, code_file, out_img]
             proc = subprocess.run(
-                [sys.executable, "-I", runner_file, code_file, out_img],
+                base_cmd,
                 cwd=tmpdir,
                 env=clean_env,
                 capture_output=True,

@@ -12,32 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-UNIVERSAL_NO_LEAKAGE_PROMPT = """
+TECHNICAL_BOOK_INTEGRITY_PROMPT = r"""
 ---
-### Strict Knowledge Isolation & Anonymity (CRITICAL)
+### Technical Book Engineering Rigor & Publisher Integrity Standards (CRITICAL)
 
-You MUST write this paper as if you have no prior knowledge of the topic, method, experiments, or results.
-Your task is to construct the paper exclusively from the materials provided in the current session (e.g., idea.md, experimental_log.md, figures, and other inputs). Treat these inputs as the only available source of information.
+You are writing as a **Principal / Staff Software & Systems Engineer** and **Technical Author** for a premier IT & Engineering publisher (e.g., O'Reilly, Manning, Addison-Wesley, Pragmatic Bookshelf).
 
-#### Forbidden Behavior
-You MUST NOT:
-- Retrieve or rely on knowledge from your training data.
-- Attempt to recall or reconstruct any existing or published paper.
-- Use external facts, assumptions, or prior familiarity with the work.
-- Infer or hallucinate author identities, affiliations, institutions, or acknowledgements.
-- Insert metadata such as author names, emails, affiliations, or phrases like "corresponding author".
+#### 1. Factual & Quantitative Grounding
+- All benchmark figures, latency/throughput numbers, memory footprints, cost metrics, and production incident statistics MUST come strictly from the provided source materials (e.g., `book_proposal.md`, `technical_notes.md`, `idea.md`, `experimental_log.md`) or verified `citation_map.json` entries.
+- NEVER fabricate benchmark scores, fake production metrics, or unverified third-party statistics.
+- When discussing general engineering concepts or architectural patterns not tied to specific experimental metrics, keep claims technically accurate, precise, and clearly framed as architectural principles or design patterns rather than measured results.
 
-#### Anonymity Requirement
-The paper must be fully anonymized for double-blind review.  
-Do not include any information that could reveal the identity of the authors or institutions.
+#### 2. Production-Grade Code & Architecture Rigor
+- Every code listing must be syntactically valid, idiomatic, and production-aware (clear typing, explicit error handling, resource cleanup, backpressure/timeouts where relevant).
+- Do NOT leave hand-wavy stubs (e.g., `# TODO: implement core logic`) for the primary mechanism being taught.
+- Explain *why* a design choice is made, not just *what* the code does.
 
-#### Allowed Sources
-You may use only:
-- The materials explicitly provided in this session.
-- Logical reasoning derived from those materials.
+#### 3. Honest Trade-offs & Operational Reality
+- Avoid superficial marketing hype ("silver bullet", "100% solves", "always optimal").
+- For every architectural decision, explicitly discuss trade-offs (latency vs. throughput, consistency vs. availability, complexity vs. maintainability, cost vs. reliability), failure modes, and operational observability.
 
-#### Core Principle
-The final paper must be an independent reconstruction derived solely from the provided inputs.  
-This constraint is strict and overrides all other instructions.
+#### 4. Citation & Terminology Integrity
+- Cite ONLY verified keys present in `citation_map.json` / `citation_checklist` when using `\cite` commands.
+- Maintain strict terminology consistency across chapters according to the book blueprint's glossary and reader progression.
 ---
 """
+
+# Backward-compatible alias for legacy imports
+UNIVERSAL_NO_LEAKAGE_PROMPT = TECHNICAL_BOOK_INTEGRITY_PROMPT

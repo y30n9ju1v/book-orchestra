@@ -1,105 +1,115 @@
-# <div align="center">🎻 PaperOrchestra: A Multi-Agent Framework for Automated AI Research Paper Writing</div>
-<div align="center">Yiwen Song<sup>1</sup>, Yale Song<sup>1</sup>, Tomas Pfister<sup>1</sup>, and Jinsung Yoon<sup>1</sup></div>
-<div align="center"><sup>1</sup>Google Cloud AI Research</div>
-<br><br>
+# <div align="center">📚 BookOrchestra: Multi-Agent Orchestration for IT & Engineering Book Publishing</div>
 
-PaperOrchestra is a multi-agent framework for automated AI research paper writing. It flexibly transforms unconstrained pre-writing materials (ideas and experimental logs) into submission-ready LaTeX manuscripts, including comprehensive literature synthesis and generated visuals, such as plots and conceptual diagrams.
+**BookOrchestra** transforms the PaperOrchestra multi-agent academic writing pipeline into a production-oriented **IT, Software Engineering, Systems, and AI Engineering Book Authoring & Publishing Framework** designed around the perspectives of:
 
-Acting like an orchestrated team of specialized agents, it handles outline generation, literature review, section writing, content refinement, and plotting to close the gap between raw research materials and submission ready papers.
+1. **Senior / Principal Software & Systems Engineers**: Enforces mental models, capacity math, production-grade code listings (`lstlisting` with error handling, backpressure, and timeouts), honest architectural trade-offs (latency vs. throughput, consistency vs. availability, cost vs. reliability), and real outage post-mortem lessons.
+2. **Professional Technical Publishers (O'Reilly, Manning, Addison-Wesley, Pragmatic Bookshelf)**: Enforces target-audience calibration, progressive chapter scaffolding, publisher callout boxes (`objectivesbox`, `tipbox`, `warningbox`, `pitfallbox`, `notebox`, `architecturebox`, `exercisesbox`), terminology consistency across chapters via a Continuity Ledger, modular LaTeX chapter splits, Markdown manuscript export, and a **3-Persona Editorial & Technical Review Board**.
 
-<div align="center">
-  <img src="assets/overview.png" alt="PaperOrchestra Overview" width="90%"/>
-</div>
+---
 
-## Key Features
+## 한국어 개요 (Overview for Korean Engineers & Authors)
 
-- **Multi-Agent Pipeline**: Orchestrates specialized agents (Outline, Literature Review, Section Writing, Content Refinement, Plotting) for end-to-end paper generation.
-- **Comprehensive Literature Synthesis**: Automatically searches, prioritizes, and integrates relevant literature into the manuscript.
-- **Visuals Generation**: Generates plots and supports the inclusion of conceptual diagrams.
-- **LaTeX Automation**: Produces submission-ready LaTeX manuscripts adhering to target conference templates.
+기존 논문 작성용 `PaperOrchestra` 파이프라인을 **IT / 소프트웨어 / 시스템 / AI 엔지니어링 전문 서적 집필 및 출판 오케스트레이션**으로 전면 개편했습니다.
+
+### 핵심 변경 사항
+1. **이중 블라인드 논문 제약 제거 → 엔지니어링 & 출판 무결성(`TECHNICAL_BOOK_INTEGRITY_PROMPT`) 적용**
+   - [utils/prompt_utils.py](file:///Users/yeongjun/Develops/book-orchestra/utils/prompt_utils.py): 익명성·8페이지 학회 제한 대신 **벤치마크/성능 수치의 원천 데이터 근거(Grounding)**, **실행 가능하고 에러 처리가 포함된 프로덕션 코드 작성**, **과장 없는 트레이드오프 및 장애 모드 분석**을 강제합니다.
+2. **전문 출판사 기반 Book Templates (`templates/`) 추가**
+   - [templates/oreilly_style_book/](file:///Users/yeongjun/Develops/book-orchestra/templates/oreilly_style_book/template.tex): O'Reilly 스타일 실무 아키텍처 & 엔지니어링 가이드 (`\part`, `\chapter`, 코드 하이라이팅, 학습 목표·팁·경고·함정·아키텍처 트레이드오프·연습문제 박스 완비)
+   - [templates/manning_in_action_book/](file:///Users/yeongjun/Develops/book-orchestra/templates/manning_in_action_book/template.tex): Manning "In Action" 스타일 프로젝트·코드 중심 점진적 구현 서적
+   - [templates/systems_handbook/](file:///Users/yeongjun/Develops/book-orchestra/templates/systems_handbook/template.tex): Addison-Wesley / DDIA / Google SRE 스타일 Staff/Principal 엔지니어용 시스템 핸드북
+3. **5개 전문 에이전트 업그레이드 (`methods/agents/` & `methods/prompts/`)**
+   - **Book Blueprint Agent (`OutlineAgent` / `BookBlueprintAgent`)**: 책 메타데이터(`book_metadata`), 용어집(`terminology_glossary`), 러닝 케이스 스터디, 챕터별 학습 목표·코드 리스팅 계획·콜아웃 박스·연습문제 청사진 생성
+   - **Technical Reference & Ecosystem Agent (`HybridLiteratureAgent` / `TechnicalResearchAgent`)**: 시스템 논문(OSDI/SOSP/NSDI/NeurIPS), RFC, 공식 기술 리포트·고전 서적까지 탐색하여 Preface 및 1장(생태계 비교 & 트레이드오프) 집필
+   - **Technical Illustration & Benchmark Agent (`PlottingAgent` / `TechnicalIllustrationAgent`)**: 아키텍처 토폴로지·데이터 플로우 다이어그램 및 p50/p95/p99 레이턴시·처리량 벤치마크 차트 생성
+   - **Chapter Writing Agent (`SectionWritingAgent` / `ChapterWritingAgent`)**: `book_continuity_ledger.json` 기반 용어·라벨 일관성 유지, 전체 LaTeX 원고 및 챕터별 분할 파일(`latex_writeup/chapters/chXX_*.tex`), Markdown 원고(`final_book.md`) 생성
+   - **3-Persona Editorial Review Board (`autoraters/agent_review.py` & `ContentRefinementAgent` / `EditorialRefinementAgent`)**:
+     - Persona 1: **Principal Systems Engineer** (아키텍처 불변량, 장애 모드, 코드 견고성 검증)
+     - Persona 2: **Executive Developmental Editor** (독자 난이도 곡선, 학습 목표, 실무 Hook 검증)
+     - Persona 3: **Production & Copy Editor** (용어 통일성, 코드 마진 줄바꿈, 표·그림 레이아웃 검증)
+4. **로컬 환경 친화적 PDF/Markdown 폴백 (`utils/pdf_utils.py`)**
+   - `pdflatex`가 설치되어 있으면 정식 LaTeX + BibTeX 빌드를 수행하고, 설치되어 있지 않은 환경에서도 `final_book.md`와 함께 미리보기용 다중 페이지 `final_book.pdf`를 생성하여 파이프라인과 UI가 끊기지 않습니다.
+
+---
+
+## Key Features & Agent Architecture
+
+| Pipeline Stage | Agent / Module | Senior Engineer & Publisher Responsibilities |
+| :--- | :--- | :--- |
+| **1. Book Blueprint & TOC** | `OutlineAgent` (`BookBlueprintAgent`) | Defines target persona, prerequisites, glossary, running case study, diagram specs, and chapter-by-chapter pedagogical plans. |
+| **2. Ecosystem & Reference Research** | `HybridLiteratureAgent` (`TechnicalResearchAgent`) | Discovers systems papers, RFCs, technical reports, and books; writes Preface & Chapter 1 ecosystem trade-off synthesis. |
+| **3. Diagrams & Benchmark Plots** | `PlottingAgent` (`TechnicalIllustrationAgent`) | Generates print-ready white-background system diagrams (control/data plane, sequence flows) and unit-labeled latency/throughput plots. |
+| **4. Multi-Chapter Authoring** | `SectionWritingAgent` (`ChapterWritingAgent`) | Writes full chapters with `objectivesbox`, code listings (`lstlisting`), `booktabs` trade-off matrices, callout boxes, `exercisesbox`, and Continuity Ledger + modular `chapters/ch*.tex`. |
+| **5. Editorial Review Board & Typesetting QA** | `ContentRefinementAgent` (`EditorialRefinementAgent`) & `autoraters/agent_review.py` | Evaluates drafts with a 3-Persona Editorial Board (`Technical_Depth`, `Practical_Utility`, `Code_and_Architecture_Quality`, `Pedagogical_Clarity`, `Structural_Coherence`, `Editorial_Polish`), refines prose/code, and checks typesetting. |
+
+---
 
 ## Installation
 
-1.  **Environment Setup**: The project relies on a Conda environment named `paper_orchestra`. You can set up a similar environment with Python 3.11 and install the required dependencies.
-    ```bash
-    conda create -n paper_orchestra python=3.11
-    conda activate paper_orchestra
-    pip install -r requirements.txt
-    ```
+1. **Python Environment** (Python 3.11+ recommended):
+   ```bash
+   pip install -r requirements.txt
+   ```
+   *(Optional for full native TeX typesetting: install TeX Live / MacTeX with `pdflatex` and `bibtex`. Without `pdflatex`, BookOrchestra outputs full LaTeX `.tex` + modular `chapters/`, clean `final_book.md`, and a built-in fallback preview `final_book.pdf`.)*
 
-2.  **Environment Variables**: Create a `.env` file in the root of the project and add your API keys:
-    ```env
-    # Add keys if you have them, otherwise leave them empty
-    # You need to specify related keys if you want to use the model
-    # For example, if you want to use Gemini models, you need to specify either VERTEX_AI_PROJECT and VERTEX_AI_LOCATION, or GEMINI_API_KEY
-    # If you want to use OpenAI models, you need to specify OPENAI_API_KEY
-    
-    SEMANTIC_SCHOLAR_API_KEY=your_semantic_scholar_api_key
-    OPENAI_API_KEY=your_openai_api_key
-    VERTEX_AI_PROJECT=your_vertex_ai_project
-    VERTEX_AI_LOCATION=your_vertex_ai_location
-    GEMINI_API_KEY=your_gemini_api_key
+2. **Environment Variables**: Create `.env` in the repository root:
+   ```env
+   GEMINI_API_KEY=your_gemini_api_key
+   # Or Vertex AI:
+   # VERTEX_AI_PROJECT=your_vertex_ai_project
+   # VERTEX_AI_LOCATION=your_vertex_ai_location
+   # Optional:
+   # OPENAI_API_KEY=your_openai_api_key
+   # SEMANTIC_SCHOLAR_API_KEY=your_semantic_scholar_api_key
+   ```
 
-    # if you want to run demo and send emails to yourself at the end, set these 2 fields as well
-    SMTP_EMAIL=your_email
-    SMTP_PASSWORD=your_password
-    ```
-
-## Dataset
-
-The dataset used for paper generation is **not included** in this code repository. It will be released separately at a later date.
-Once available, you should download the dataset and place it under the `datasets/` directory.
+---
 
 ## Usage
 
-You can run the paper generation pipeline using the provided bash script or directly via the Python CLI.
-
-### Using the Bash Script
+### 1. Book Writing CLI (`book_writing_cli.py`)
+Run the included IT/Engineering example (*Engineering Production LLM & Multi-Agent Systems*):
 ```bash
-./paper_writing_cli.sh
-```
-
-### Using the Python CLI directly
-```bash
-python paper_writing_cli.py \
-  --raw_materials_dir /path_to_your_raw_materials/ \
-  --latex_template_dir /path_to_your_latex_template/ \
-  --output_dir /path_to_your_output_folder/ \
+python3 book_writing_cli.py \
+  --raw_materials_dir examples/distributed_llm_systems_book/raw_materials \
+  --latex_template_dir templates/oreilly_style_book \
+  --output_dir ./book_output_llm_systems \
+  --target_audience "Senior Backend, Platform, and ML Systems Engineers" \
+  --book_style "Practical Architecture & Production Engineering" \
   --use_plotting true
 ```
+Or launch via the convenience shell script:
+```bash
+./book_writing_cli.sh
+```
+*(Backward compatibility: `paper_writing_cli.py` and `methods/paper_writer*.py` continue to work and delegate cleanly to the upgraded book pipeline.)*
 
-### Key Arguments
-*   `--raw_materials_dir`: (Required) Directory containing the raw materials (e.g., idea and experimental log).
-*   `--latex_template_dir`: (Required) Directory containing the LaTeX template (e.g., `templates/cvpr2025`).
-*   `--output_dir`: Directory to output the generated paper. If not specified, an automatic folder with a timestamp is created.
-*   `--use_plotting`: Enable the plotting agent workflow to generate figures from code (Default: `False`).
-*   `--writer_model_name`: LLM for writer and literature agents.
-*   `--reflection_model_name`: LLM for reflection agents.
+### 2. Interactive Publishing Studio (`frontend/app.py`)
+```bash
+streamlit run frontend/app.py
+```
+Click **"Load IT/Engineering Book Example"** in the sidebar to inspect or run a complete distributed systems book pipeline.
 
-### Interactive Demo
+### 3. Generated Outputs
+Inside `--output_dir`:
+- `final_book.pdf` (and backward-compatible `final_paper.pdf`): Compiled book manuscript PDF
+- `final_book.tex`: Complete compilable LaTeX book manuscript
+- `final_book.md`: Clean Markdown book manuscript for Markdown/Pandoc/EPUB workflows
+- `latex_writeup/chapters/ch01_*.tex`, `ch02_*.tex`, ...: Modular chapter-by-chapter LaTeX files
+- `book_continuity_ledger.json`: Tracked glossary terms, chapter titles, code listings, and cross-reference labels
+- `outline.json`: Complete Book Blueprint & TOC
+- `literature_agent_output/citation_map.json` & `references.bib`: Verified references
+- `content_refinement_workdir/peer_reviews/`: 3-Persona Editorial Review Board evaluations
 
-We provide an interactive Streamlit demo for the paper generation pipeline. For instructions on how to run and use it, please refer to the [README.md](frontend/README.md) in the `frontend` directory.
+---
 
 ## Project Structure
 
-*   `autoraters/`: Contains scripts for automated evaluation.
-*   `methods/`: Core logic for agents and pipeline execution.
-*   `templates/`: LaTeX templates for target conferences, you can add your own template by creating a new subfolder under this directory.
-*   `utils/`: Utility functions for API calls, PDF handling, etc.
-
-## Citation
-
-If you find this repo or our paper helpful, please cite it as follows:
-
-```bibtex
-@article{song2026paperorchestra,
-  title={PaperOrchestra: A Multi-Agent Framework for Automated AI Research Paper Writing},
-  author={Song, Yiwen and Song, Yale and Pfister, Tomas and Yoon, Jinsung},
-  journal={arXiv preprint arXiv:2604.05018},
-  year={2026}
-}
-```
-
-# Disclaimer
-
-This is not an officially supported Google product.
+- `book_writing_cli.py` / `book_writing_cli.sh`: Primary CLI for technical book generation (with `paper_writing_cli.py` compatibility wrapper)
+- `methods/`: Core orchestration (`book_writer.py`, `book_writer_with_plotting.py`, `agents/`, `prompts/`)
+- `templates/`: Publisher LaTeX templates (`oreilly_style_book/`, `manning_in_action_book/`, `systems_handbook/`, plus legacy `cvpr2025/`, `iclr2025/`)
+- `autoraters/`: 3-Persona Editorial Review Board (`agent_review.py`), Reference Quality & SxS Book Evaluators
+- `examples/distributed_llm_systems_book/`: Complete IT/Engineering book proposal and technical benchmark notes
+- `frontend/`: Streamlit Publishing Studio UI (`app.py`)
+- `utils/`: LLM backends, PDF/LaTeX/Markdown utilities, diagram/plot generation, reference search
+- `tests/`: Automated unit & end-to-end mocked pipeline tests

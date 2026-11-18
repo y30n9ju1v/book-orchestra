@@ -1,0 +1,178 @@
+% Systems Engineering Handbook Template (Addison-Wesley / DDIA / Google SRE Style)
+% Designed for Staff & Principal Engineers: Deep Internals, Invariants, Capacity Math & SRE
+
+\documentclass[11pt,oneside]{book}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[paperwidth=7in,paperheight=9.25in,top=0.85in,bottom=0.9in,inner=0.85in,outer=0.75in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,citecolor=teal!60!black,urlcolor=blue!55!black]{hyperref}
+\usepackage[capitalize]{cleveref}
+
+\definecolor{sysCharcoal}{RGB}{30, 41, 59}
+\definecolor{sysSteel}{RGB}{51, 65, 85}
+\definecolor{sysTeal}{RGB}{15, 118, 110}
+\definecolor{sysAmber}{RGB}{180, 83, 9}
+\definecolor{sysCrimson}{RGB}{153, 27, 27}
+\definecolor{codeBg}{RGB}{248, 250, 252}
+\definecolor{boxBg}{RGB}{241, 245, 249}
+\definecolor{warnBg}{RGB}{254, 242, 242}
+\definecolor{tipBg}{RGB}{240, 253, 250}
+
+\lstset{
+    backgroundcolor=\color{codeBg},
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{sysCharcoal}\bfseries,
+    commentstyle=\color{sysSteel}\itshape,
+    stringstyle=\color{sysTeal},
+    numberstyle=\tiny\color{sysSteel},
+    numbers=left,
+    stepnumber=1,
+    numbersep=8pt,
+    frame=single,
+    rulecolor=\color{sysSteel!35},
+    breaklines=true,
+    breakatwhitespace=false,
+    showstringspaces=false,
+    tabsize=4,
+    captionpos=b
+}
+
+\newenvironment{objectivesbox}[1][Chapter Scope & Architectural Invariants]{%
+    \par\vspace{0.75\baselineskip}%
+    \noindent\fcolorbox{sysCharcoal}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{sysCharcoal}#1}\par\vspace{0.35\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.75\baselineskip}%
+}
+
+\newenvironment{tipbox}[1][Operational Best Practice]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{sysTeal}{tipBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{sysTeal}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{warningbox}[1][Failure Domain Alert]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{sysCrimson}{warnBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{sysCrimson}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{pitfallbox}[1][Production Pitfall]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{sysAmber}{warnBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{sysAmber}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{notebox}[1][Systems Internals Note]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{sysSteel}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{sysSteel}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{architecturebox}[1][Architectural Trade-off Matrix]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{sysCharcoal}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{sysCharcoal}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{exercisesbox}[1][Review Checklist & Architecture Exercises]{%
+    \par\vspace{0.75\baselineskip}%
+    \noindent\fcolorbox{sysCharcoal}{codeBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{sysCharcoal}#1}\par\vspace{0.35\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.75\baselineskip}%
+}
+
+%%%%%%%%% BOOK TITLE AND AUTHOR - PLEASE UPDATE
+\title{\textbf{Handbook of Production Systems Engineering}\\[0.5em]\large Invariants, Capacity Modeling, Fault Isolation, and Empirical Performance}
+\author{Staff Systems Architecture Group}
+\date{\today}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\tableofcontents
+
+\chapter*{Foreword and Scope}
+\addcontentsline{toc}{chapter}{Foreword and Scope}
+%%%%%%%%% PREFACE / INTRODUCTION %%%%%%%%%
+Target audience (Staff/Principal engineers), formal notation conventions, and systems assumptions here.
+%%%%%%%%% PREFACE / INTRODUCTION %%%%%%%%%
+
+\mainmatter
+
+\part{Systems Foundations and Comparative Architecture}
+
+\chapter{Theoretical Bounds, Protocols, and Ecosystem Taxonomy}
+\label{ch:foundations}
+%%%%%%%%% FOUNDATIONS AND ECOSYSTEM %%%%%%%%%
+Formal problem framing, distributed systems bounds, and comparative ecosystem taxonomy here.
+%%%%%%%%% FOUNDATIONS AND ECOSYSTEM %%%%%%%%%
+
+\part{Internals, Storage, and Execution Engines}
+
+\chapter{Memory Hierarchy, Scheduling, and State Management}
+\label{ch:internals}
+%%%%%%%%% INTERNALS %%%%%%%%%
+Deep mechanics, capacity equations, data structures, and control/data plane separation here.
+%%%%%%%%% INTERNALS %%%%%%%%%
+
+\chapter{Reference Implementation and Protocol Mechanics}
+\label{ch:implementation}
+%%%%%%%%% IMPLEMENTATION %%%%%%%%%
+Production code listings, concurrency primitives, and protocol state machines here.
+%%%%%%%%% IMPLEMENTATION %%%%%%%%%
+
+\part{Empirical Evaluation, Reliability, and Operations}
+
+\chapter{Benchmark Methodology, Tail Latency, and Cost Economics}
+\label{ch:benchmarks}
+%%%%%%%%% BENCHMARKS %%%%%%%%%
+Controlled experiments, p50/p95/p99 tail behavior, and unit economics analysis here.
+%%%%%%%%% BENCHMARKS %%%%%%%%%
+
+\chapter{Failure Modes, Blast-Radius Isolation, and SRE Playbooks}
+\label{ch:sre}
+%%%%%%%%% SRE %%%%%%%%%
+Cascading failure prevention, load shedding, observability, and incident response here.
+%%%%%%%%% SRE %%%%%%%%%
+
+\backmatter
+
+%%%%%%%%% REFERENCES %%%%%%%%%
+\bibliographystyle{plain}
+\bibliography{references}
+%%%%%%%%% REFERENCES %%%%%%%%%
+
+%%%%%%%%% APPENDIX %%%%%%%%%
+% \appendix
+% \chapter{Capacity Equations and Production Runbook Reference}
+%%%%%%%%% APPENDIX %%%%%%%%%
+
+\end{document}

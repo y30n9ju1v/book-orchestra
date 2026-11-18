@@ -15,13 +15,12 @@
 import json
 from typing import Optional, Callable, Dict, Any
 
-from google.genai import types
-
 from utils.gemini_utils import (
     call_gemini_with_text_prompt,
     parse_gemini_json_results,
     call_gemini_with_contents,
     call_gemini_with_images,
+    types,
 )
 from utils.openai_utils import (
     call_openai_models_with_text_prompt,

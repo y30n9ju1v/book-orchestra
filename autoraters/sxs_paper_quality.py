@@ -19,12 +19,14 @@ import base64
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from google.genai import types
-import pymupdf  # type: ignore
+try:
+    import pymupdf  # type: ignore
+except ImportError:
+    pymupdf = None  # type: ignore
 
 from utils.pdf_utils import load_paper
 from utils.llm_backend_utils import get_llm_parser
-from utils.gemini_utils import call_gemini_with_contents
+from utils.gemini_utils import call_gemini_with_contents, types
 from utils.openai_utils import call_openai_models_with_content
 from autoraters.prompts.sxs_quality_prompts import sxs_paper_quality_system_prompt
 
@@ -33,6 +35,8 @@ FILE_LOCK = threading.Lock()
 
 
 def get_pdf_page_images_base64(pdf_path, max_pages=None):
+    if pymupdf is None:
+        return []
     doc = pymupdf.open(pdf_path)
     b64_images = []
     for i, page in enumerate(doc):

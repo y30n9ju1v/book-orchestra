@@ -18,12 +18,6 @@ import json
 import sys
 import time
 import threading
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from dotenv import load_dotenv
 import subprocess
 import shutil
 import tempfile
@@ -33,18 +27,24 @@ import zipfile
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 import signal
 import ctypes
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+
+    def load_dotenv():
+        return False
+
+
 from frontend_utils import send_notification_email
 
 load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from methods.paper_writer import write_single_paper
-from utils.pdf_utils import pdf_to_grid_images
-
 st.set_page_config(
-    page_title="Paper Orchestra - AI Paper Writer",
-    page_icon="🎻",
+    page_title="BookOrchestra - AI Technical Book Publishing Studio",
+    page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -77,7 +77,6 @@ def apply_custom_css():
 apply_custom_css()
 
 
-# Session State Initialization
 def initialize_session_state():
     default_states = {
         "locked": False,
@@ -85,11 +84,11 @@ def initialize_session_state():
         "progress": 0,
         "hide_inputs": False,
         "logs": {
-            "Outline Generation": "",
-            "Literature Review": "",
-            "Figure Plotting": "",
-            "Section Writing": "",
-            "Content Refinement": "",
+            "Book Blueprint & TOC": "",
+            "Technical Ecosystem Research": "",
+            "Diagram & Benchmark Plotting": "",
+            "Multi-Chapter Authoring": "",
+            "Editorial Review Board": "",
         },
         "current_step": 0,
         "figures": [],
@@ -107,63 +106,97 @@ def initialize_session_state():
 initialize_session_state()
 
 
+def _load_example_json(filename: str):
+    examples_directory = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "examples"
+    )
+    json_path = os.path.join(examples_directory, filename)
+    try:
+        with open(json_path, "r", encoding="utf-8") as file_object:
+            example_data = json.load(file_object)
+        st.session_state.idea_text_main = example_data.get("idea", "")
+        st.session_state.log_text_main = example_data.get("log", "")
+
+        figure_path = example_data.get("figure_path")
+        figure_caption = example_data.get("figure_caption", "")
+        st.session_state.figures = []
+        if figure_path:
+            full_figure_path = os.path.join(examples_directory, figure_path)
+            if os.path.exists(full_figure_path):
+                st.session_state.figures = [
+                    {
+                        "file": full_figure_path,
+                        "name": figure_path,
+                        "caption": figure_caption,
+                    }
+                ]
+
+        st.sidebar.success("🎉 Example loaded successfully!")
+        time.sleep(0.5)
+        st.rerun()
+    except Exception as exception_object:
+        st.sidebar.error(f"Error loading example: {exception_object}")
+
+
 def render_sidebar():
-    st.sidebar.title("🎻 Configuration")
+    st.sidebar.title("📚 Publishing Studio")
 
-    if st.sidebar.button("Load CVPR Example", disabled=st.session_state.locked):
-        examples_directory = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "examples"
-        )
-        javascript_object_notation_path = os.path.join(
-            examples_directory, "cvpr_example.json"
-        )
-        try:
-            with open(javascript_object_notation_path, "r") as file_object:
-                example_data = json.load(file_object)
-            st.session_state.idea_text_main = example_data.get("idea", "")
-            st.session_state.log_text_main = example_data.get("log", "")
+    if st.sidebar.button(
+        "Load IT/Engineering Book Example", disabled=st.session_state.locked
+    ):
+        _load_example_json("it_book_example.json")
 
-            figure_path = example_data.get("figure_path")
-            figure_caption = example_data.get("figure_caption", "")
-            if figure_path:
-                full_figure_path = os.path.join(examples_directory, figure_path)
-                if os.path.exists(full_figure_path):
-                    st.session_state.figures = [
-                        {
-                            "file": full_figure_path,
-                            "name": figure_path,
-                            "caption": figure_caption,
-                        }
-                    ]
-
-            st.sidebar.success("🎉 Example loaded successfully!")
-            time.sleep(1)
-            st.rerun()
-        except Exception as exception_object:
-            st.sidebar.error(f"Error loading example: {exception_object}")
+    if st.sidebar.button(
+        "Load Legacy CVPR Example", disabled=st.session_state.locked
+    ):
+        _load_example_json("cvpr_example.json")
 
     models = ["gemini-3.1-pro-preview", "gemini-3-flash-preview"]
     selected_model = st.sidebar.selectbox(
-        "Select Model", models, disabled=st.session_state.locked
+        "Select Authoring LLM", models, disabled=st.session_state.locked
     )
 
-    templates = ["cvpr2025", "iclr2025"]
+    templates = [
+        "oreilly_style_book",
+        "manning_in_action_book",
+        "systems_handbook",
+        "cvpr2025",
+        "iclr2025",
+    ]
     selected_template = st.sidebar.selectbox(
-        "Select Template", templates, disabled=st.session_state.locked
+        "Select Book / Publisher Template",
+        templates,
+        disabled=st.session_state.locked,
+    )
+
+    audiences = [
+        "Senior / Staff Engineers & Architects",
+        "Mid-to-Senior Software Engineers",
+        "Platform / SRE / DevOps Engineers",
+        "AI / ML Systems Engineers",
+    ]
+    selected_audience = st.sidebar.selectbox(
+        "Target Reader Persona", audiences, disabled=st.session_state.locked
+    )
+
+    styles = [
+        "Architecture & Production Trade-offs (DDIA / O'Reilly)",
+        "Project-Based Hands-On (Manning In Action)",
+        "Deep Systems Reference & Handbook (SRE / Addison-Wesley)",
+    ]
+    selected_style = st.sidebar.selectbox(
+        "Pedagogical Style", styles, disabled=st.session_state.locked
     )
 
     plotting_options = ["Yes", "No"]
     enable_plotting = st.sidebar.selectbox(
-        "Enable Figure Generation",
+        "Generate Architecture Diagrams & Benchmark Plots",
         plotting_options,
         index=0,
         disabled=st.session_state.locked,
     )
 
-    st.sidebar.markdown(
-        "Your Email (for notification) <span style='color:red'>*</span>",
-        unsafe_allow_html=True,
-    )
+    st.sidebar.markdown("Notification Email (optional)")
     email_input = st.sidebar.text_input(
         "Email",
         key="email_input",
@@ -176,15 +209,30 @@ def render_sidebar():
             st.session_state.email_confirmed = True
         else:
             st.session_state.email_confirmed = False
-            st.sidebar.warning("⚠️ Please enter an email address first.")
+            st.sidebar.info("Email notification skipped (optional).")
 
     if st.session_state.get("email_confirmed"):
-        st.sidebar.success("📧 Email confirmed successfully!")
+        st.sidebar.success("📧 Email confirmed!")
 
-    return selected_model, selected_template, enable_plotting, email_input
+    return (
+        selected_model,
+        selected_template,
+        selected_audience,
+        selected_style,
+        enable_plotting,
+        email_input,
+    )
 
 
-selected_model, selected_template, enable_plotting, email_input = render_sidebar()
+(
+    selected_model,
+    selected_template,
+    selected_audience,
+    selected_style,
+    enable_plotting,
+    email_input,
+) = render_sidebar()
+
 
 # ------------------------------------------------------------------------
 # UI COMPONENT FUNCTIONS
@@ -192,15 +240,15 @@ selected_model, selected_template, enable_plotting, email_input = render_sidebar
 
 
 def render_gallery_tab():
-    st.subheader("Uploaded Figures")
+    st.subheader("Uploaded Architecture Diagrams & Figures")
     if not st.session_state.figures:
         if not st.session_state.running:
             st.markdown(
-                "<p style='color: gray; font-style: italic;'>No figures uploaded yet. Add figures from the input materials section.</p>",
+                "<p style='color: gray; font-style: italic;'>No diagrams uploaded yet. Add diagrams from the input materials section or enable automatic diagram generation.</p>",
                 unsafe_allow_html=True,
             )
         else:
-            st.info("ℹ️ No user figures provided for this run.")
+            st.info("ℹ️ No user-supplied figures for this run.")
     else:
         for index, figure in enumerate(st.session_state.figures):
             st.markdown(
@@ -225,14 +273,14 @@ def render_gallery_tab():
                 st.rerun()
             st.markdown("<hr>", unsafe_allow_html=True)
 
-    st.subheader("Generated Figures")
+    st.subheader("Generated Architecture Diagrams & Benchmark Plots")
     if st.session_state.get("run_directory"):
         results_path = os.path.join(
             st.session_state.run_directory, "plotting_results.json"
         )
         if os.path.exists(results_path):
             try:
-                with open(results_path, "r") as file_object:
+                with open(results_path, "r", encoding="utf-8") as file_object:
                     st.session_state.generated_figures = json.load(file_object)
             except Exception:
                 pass
@@ -243,7 +291,7 @@ def render_gallery_tab():
                 st.session_state.run_directory, figure.get("image_path", "")
             )
             if os.path.exists(image_path):
-                st.markdown(f"**{figure.get('title', 'Figure')}**")
+                st.markdown(f"**{figure.get('title', 'Diagram / Plot')}**")
                 st.image(image_path, caption=figure.get("caption", ""))
                 st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -254,7 +302,7 @@ def render_json_file(file_name, title, failure_message):
         file_path = os.path.join(st.session_state.run_directory, file_name)
         if os.path.exists(file_path):
             try:
-                with open(file_path, "r") as file_object:
+                with open(file_path, "r", encoding="utf-8") as file_object:
                     st.json(json.load(file_object))
             except Exception as exception_object:
                 st.error(f"Error loading {title.lower()}: {exception_object}")
@@ -276,7 +324,7 @@ def render_pdf_and_snapshots(pdf_path, snapshots_directory, download_key):
             )
 
         if os.path.exists(snapshots_directory):
-            st.markdown("**Snapshots:**")
+            st.markdown("**Page Previews:**")
             image_files = sorted(
                 [
                     file
@@ -300,24 +348,23 @@ def render_pdf_and_snapshots(pdf_path, snapshots_directory, download_key):
 
 
 def handle_live_execution(
-    steps, email_input, selected_template, selected_model, enable_plotting
+    steps,
+    email_input,
+    selected_template,
+    selected_model,
+    selected_audience,
+    selected_style,
+    enable_plotting,
 ):
     if st.session_state.running:
-
         if not st.session_state.get("thread_started"):
-            if (
-                not st.session_state.get("saved_idea")
-                or not st.session_state.get("saved_log")
-                or not st.session_state.get("email_input")
+            if not st.session_state.get("saved_idea") or not st.session_state.get(
+                "saved_log"
             ):
-                st.session_state.error_message = (
-                    "❌ Please fill in all required fields (Idea, Log, and Email)."
-                )
+                st.session_state.error_message = "❌ Please provide both the Book Proposal and Technical Notes."
                 st.session_state.running = False
                 st.session_state.locked = False
-                st.session_state.hide_inputs = (
-                    False  # Fixed: ensures inputs pop back up if validation fails
-                )
+                st.session_state.hide_inputs = False
                 st.rerun()
             st.session_state.thread_started = True
 
@@ -325,7 +372,7 @@ def handle_live_execution(
             parent_directory = os.path.dirname(base_directory)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             run_directory = os.path.join(
-                parent_directory, "demo_logs", f"paper_orchestra_run_{timestamp}"
+                parent_directory, "demo_logs", f"book_orchestra_run_{timestamp}"
             )
             st.session_state.run_directory = run_directory
             raw_materials_directory = os.path.join(run_directory, "raw_materials")
@@ -338,7 +385,7 @@ def handle_live_execution(
             command = [
                 sys.executable,
                 "-u",
-                os.path.join(base_directory, "paper_writing_cli.py"),
+                os.path.join(base_directory, "book_writing_cli.py"),
                 "--raw_materials_dir",
                 raw_materials_directory,
                 "--output_dir",
@@ -349,10 +396,14 @@ def handle_live_execution(
                 selected_model,
                 "--reflection_model_name",
                 selected_model,
-                "--idea_filename",
-                "idea_sparse.md",
-                "--experimental_log_filename",
-                "experimental_log.md",
+                "--proposal_filename",
+                "book_proposal.md",
+                "--technical_notes_filename",
+                "technical_notes.md",
+                "--target_audience",
+                selected_audience,
+                "--book_style",
+                selected_style,
             ]
             if enable_plotting == "Yes":
                 command.extend(
@@ -376,34 +427,38 @@ def handle_live_execution(
                 figures_list,
             ):
                 try:
-                    libc = ctypes.CDLL(None)
-                    process_set_parent_death_signal = 1
+                    preexec_fn = None
+                    if sys.platform.startswith("linux"):
+                        libc = ctypes.CDLL(None)
+                        process_set_parent_death_signal = 1
 
-                    def set_death_signal():
-                        libc.prctl(process_set_parent_death_signal, signal.SIGKILL)
+                        def set_death_signal():
+                            libc.prctl(process_set_parent_death_signal, signal.SIGKILL)
+
+                        preexec_fn = set_death_signal
 
                     os.makedirs(run_directory, exist_ok=True)
-                    raw_materials_directory = os.path.join(
-                        run_directory, "raw_materials"
-                    )
-                    figures_directory = os.path.join(raw_materials_directory, "figures")
-
-                    os.makedirs(raw_materials_directory, exist_ok=True)
-                    os.makedirs(figures_directory, exist_ok=True)
+                    raw_materials_dir = os.path.join(run_directory, "raw_materials")
+                    figures_dir = os.path.join(raw_materials_dir, "figures")
+                    os.makedirs(raw_materials_dir, exist_ok=True)
+                    os.makedirs(figures_dir, exist_ok=True)
 
                     with open(
-                        os.path.join(raw_materials_directory, "idea_sparse.md"), "w"
+                        os.path.join(raw_materials_dir, "book_proposal.md"),
+                        "w",
+                        encoding="utf-8",
                     ) as file_object:
                         file_object.write(idea_content)
 
                     with open(
-                        os.path.join(raw_materials_directory, "experimental_log.md"),
+                        os.path.join(raw_materials_dir, "technical_notes.md"),
                         "w",
+                        encoding="utf-8",
                     ) as file_object:
                         file_object.write(log_content)
 
                     for figure in figures_list:
-                        figure_path = os.path.join(figures_directory, figure["name"])
+                        figure_path = os.path.join(figures_dir, figure["name"])
                         if isinstance(figure["file"], str):
                             shutil.copy(figure["file"], figure_path)
                         else:
@@ -416,7 +471,7 @@ def handle_live_execution(
                         stderr=subprocess.STDOUT,
                         text=True,
                         cwd=working_directory,
-                        preexec_fn=set_death_signal,
+                        preexec_fn=preexec_fn,
                     )
 
                     current_step_name = steps_list[0]
@@ -437,9 +492,15 @@ def handle_live_execution(
                                 or "Saved figures/" in line
                                 or "[DEBUG] Starting run_plotting_agent" in line
                             ):
-                                st.session_state.logs["Figure Plotting"] += line
+                                st.session_state.logs[
+                                    "Diagram & Benchmark Plotting"
+                                ] += line
                             else:
-                                if "Starting Fast Hybrid Literature Agent" in line:
+                                if (
+                                    "Starting Technical Ecosystem & Literature Agent"
+                                    in line
+                                    or "Starting Fast Hybrid Literature Agent" in line
+                                ):
                                     st.session_state.current_step = 1
                                     current_step_name = steps_list[1]
                                 elif "Agent SectionWritingAgent starting" in line:
@@ -459,68 +520,35 @@ def handle_live_execution(
                         if recipient_email:
                             attachments = []
                             run_dir = st.session_state.run_directory
+                            for fname in ("final_book.pdf", "final_book.md"):
+                                fpath = os.path.join(run_dir, fname)
+                                if os.path.exists(fpath):
+                                    attachments.append(fpath)
 
-                            # 1. Final PDF
-                            final_pdf = os.path.join(run_dir, "final_paper.pdf")
-                            if os.path.exists(final_pdf):
-                                attachments.append(final_pdf)
-
-                            # 2. LaTeX Zip
                             latex_writeup = os.path.join(run_dir, "latex_writeup")
-                            final_tex = os.path.join(
-                                run_dir,
-                                "content_refinement_workdir",
-                                "final_refined_paper.tex",
-                            )
-
-                            if os.path.exists(latex_writeup) and os.path.exists(
-                                final_tex
-                            ):
+                            if os.path.exists(latex_writeup):
                                 try:
-                                    with tempfile.TemporaryDirectory() as tmp_dir:
-                                        zip_source_dir = os.path.join(
-                                            tmp_dir, "latex_source"
-                                        )
-                                        shutil.copytree(latex_writeup, zip_source_dir)
-
-                                        for f_name in [
-                                            "template.tex",
-                                            "raw_draft_paper.tex",
-                                        ]:
-                                            f_path = os.path.join(
-                                                zip_source_dir, f_name
-                                            )
-                                            if os.path.exists(f_path):
-                                                os.remove(f_path)
-
-                                        shutil.copy(
-                                            final_tex,
-                                            os.path.join(zip_source_dir, "main.tex"),
-                                        )
-
-                                        zip_output_base = os.path.join(
-                                            run_dir, "latex_source"
-                                        )
-                                        shutil.make_archive(
-                                            zip_output_base, "zip", zip_source_dir
-                                        )
-
-                                        if os.path.exists(zip_output_base + ".zip"):
-                                            attachments.append(zip_output_base + ".zip")
+                                    zip_output_base = os.path.join(
+                                        run_dir, "latex_source"
+                                    )
+                                    shutil.make_archive(
+                                        zip_output_base, "zip", latex_writeup
+                                    )
+                                    if os.path.exists(zip_output_base + ".zip"):
+                                        attachments.append(zip_output_base + ".zip")
                                 except Exception as e:
-                                    print(f" >> Error preparing latex zip: {e}")
                                     st.session_state.logs[
-                                        "Content Refinement"
+                                        "Editorial Review Board"
                                     ] += f"\n❌ Error preparing latex zip: {e}"
 
                             send_notification_email(
                                 recipient_email,
-                                "Generated Paper",
+                                "Generated Technical Book",
                                 attachments=attachments,
                             )
                 except Exception as exception_object:
                     st.session_state.logs[
-                        "Content Refinement"
+                        "Editorial Review Board"
                     ] += f"\n❌ Error in thread: {exception_object}"
                 finally:
                     st.session_state.running = False
@@ -550,47 +578,43 @@ def handle_live_execution(
 # MAIN PAGE ROUTING
 # ------------------------------------------------------------------------
 
-st.title("🎻 Paper Orchestra Demo")
+st.title("📚 BookOrchestra — Technical & Engineering Book Publishing Studio")
 st.markdown(
-    "Demonstrating the automated paper writing process as detailed in [PaperOrchestra](https://arxiv.org/abs/2604.05018)."
+    "Multi-agent orchestration tailored for **Senior Software/Systems Engineers** and **Technical Publishers** (O'Reilly, Manning, Addison-Wesley standards)."
 )
 
 steps = [
-    "Outline Generation",
-    "Literature Review",
-    "Section Writing",
-    "Content Refinement",
+    "Book Blueprint & TOC",
+    "Technical Ecosystem Research",
+    "Multi-Chapter Authoring",
+    "Editorial Review Board",
 ]
 
-# ========================================================================
-# PHASE 1: INPUT MATERIALS (Only visible when NOT running)
-# ========================================================================
 if not st.session_state.get("hide_inputs"):
     input_container = st.container()
     with input_container:
-
         if st.session_state.get("error_message"):
             st.error(st.session_state.error_message)
             st.session_state.error_message = ""
 
-        st.header("📝 Input Materials")
+        st.header("📝 Book Source Materials")
         column_1, column_2 = st.columns(2)
 
         with column_1:
-            st.subheader("💡 Research Idea")
+            st.subheader("📘 Book Proposal & Architecture Vision")
             idea_input_type = st.radio(
-                "Idea Input Type",
+                "Proposal Input Type",
                 ["Text", "Upload"],
                 disabled=st.session_state.locked,
                 key="idea_input_type_main",
             )
             if idea_input_type == "Text":
                 st.markdown(
-                    "Enter your idea here <span style='color:red'>*</span>",
+                    "Enter book proposal, audience, and chapter scope <span style='color:red'>*</span>",
                     unsafe_allow_html=True,
                 )
                 st.text_area(
-                    "Idea",
+                    "Book Proposal",
                     key="idea_text_main",
                     label_visibility="collapsed",
                     disabled=st.session_state.locked,
@@ -598,11 +622,11 @@ if not st.session_state.get("hide_inputs"):
                 )
             else:
                 st.markdown(
-                    "Upload Idea file (.md/.txt) <span style='color:red'>*</span>",
+                    "Upload Proposal file (.md/.txt) <span style='color:red'>*</span>",
                     unsafe_allow_html=True,
                 )
                 uploaded_idea = st.file_uploader(
-                    "Upload Idea",
+                    "Upload Proposal",
                     type=["md", "txt"],
                     label_visibility="collapsed",
                     disabled=st.session_state.locked,
@@ -614,20 +638,20 @@ if not st.session_state.get("hide_inputs"):
                     )
 
         with column_2:
-            st.subheader("📊 Experimental Log")
+            st.subheader("🛠️ Technical Notes, Benchmarks & Code Specs")
             log_input_type = st.radio(
-                "Exp Log Input Type",
+                "Technical Notes Input Type",
                 ["Text", "Upload"],
                 disabled=st.session_state.locked,
                 key="log_input_type_main",
             )
             if log_input_type == "Text":
                 st.markdown(
-                    "Enter experimental log here <span style='color:red'>*</span>",
+                    "Enter capacity math, code specs, benchmarks, and post-mortems <span style='color:red'>*</span>",
                     unsafe_allow_html=True,
                 )
                 st.text_area(
-                    "Exp Log",
+                    "Technical Notes",
                     key="log_text_main",
                     label_visibility="collapsed",
                     disabled=st.session_state.locked,
@@ -635,11 +659,11 @@ if not st.session_state.get("hide_inputs"):
                 )
             else:
                 st.markdown(
-                    "Upload Exp Log file (.md/.txt) <span style='color:red'>*</span>",
+                    "Upload Technical Notes file (.md/.txt) <span style='color:red'>*</span>",
                     unsafe_allow_html=True,
                 )
                 uploaded_log = st.file_uploader(
-                    "Upload Exp Log",
+                    "Upload Technical Notes",
                     type=["md", "txt"],
                     label_visibility="collapsed",
                     disabled=st.session_state.locked,
@@ -648,32 +672,24 @@ if not st.session_state.get("hide_inputs"):
                 if uploaded_log:
                     st.session_state.log_text_main = uploaded_log.read().decode("utf-8")
 
-        st.subheader("🖼️ Upload Figures")
+        st.subheader("🖼️ Upload Architecture Diagrams or Plots (Optional)")
         figure_column_1, figure_column_2 = st.columns([1, 2])
         with figure_column_1:
             figure_file = st.file_uploader(
                 "Upload figure",
                 type=["png", "jpg", "jpeg", "pdf"],
                 disabled=st.session_state.locked,
-                key=f"figure_uploader_main",
+                key="figure_uploader_main",
             )
         with figure_column_2:
             figure_caption = st.text_input(
-                "Figure Caption",
+                "Diagram / Plot Caption",
                 disabled=st.session_state.locked,
-                key=f"figure_caption_main",
+                key="figure_caption_main",
             )
 
             button_column, _ = st.columns([1, 2])
             with button_column:
-                st.markdown(
-                    """
-                <style>
-                    .stButton > button { background-color: #e0e7ff !important; color: #3730a3 !important; border: 1px solid #c7d2fe !important; }
-                </style>
-                """,
-                    unsafe_allow_html=True,
-                )
                 if st.button(
                     "Add Figure",
                     disabled=st.session_state.locked
@@ -688,22 +704,14 @@ if not st.session_state.get("hide_inputs"):
                         }
                     )
                     st.session_state.figure_counter += 1
-                    st.success("🎉 Figure added successfully! Check the Gallery tab.")
-                    time.sleep(3)
+                    st.success("🎉 Figure added! Check the Gallery tab.")
+                    time.sleep(1)
                     st.rerun()
 
-        st.markdown(
-            """
-        <style>
-            .stButton > button[kind="primary"] { background-color: #2563eb !important; color: white !important; font-size: 1.25rem !important; padding: 1rem 2rem !important; border: none !important; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important; }
-            .stButton > button[kind="primary"]:hover { background-color: #1d4ed8 !important; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05) !important; }
-        </style>
-        """,
-            unsafe_allow_html=True,
-        )
-
         if st.button(
-            "🚀 Begin Writing", type="primary", disabled=st.session_state.locked
+            "🚀 Start Book Publishing Pipeline",
+            type="primary",
+            disabled=st.session_state.locked,
         ):
             st.session_state.saved_idea = st.session_state.get("idea_text_main")
             st.session_state.saved_log = st.session_state.get("log_text_main")
@@ -712,40 +720,36 @@ if not st.session_state.get("hide_inputs"):
             st.session_state.hide_inputs = True
             st.rerun()
 
-# ========================================================================
-# PHASE 2: PROCESSING & TABS (Only visible after clicking start)
-# ========================================================================
 else:
     if st.session_state.get("running") or st.session_state.get("thread_started"):
         st.info(
-            "🚀 Paper generation in progress! This may take 35-45 minutes. Please do not close this tab."
+            "🚀 Technical Book Publishing Pipeline running! Drafting blueprint, researching references, authoring chapters, and running the 3-Persona Editorial Review Board..."
         )
     elif (
         not st.session_state.get("running")
         and st.session_state.get("thread_started", False) is False
     ):
         if st.session_state.get("current_step") == len(steps):
-            st.success("🎉 Paper writing complete!")
+            st.success("🎉 Technical Book Manuscript Complete!")
         elif st.session_state.get("current_step", 0) < len(steps) and any(
             st.session_state.logs.values()
         ):
-            st.error("❌ Paper writing failed or stopped unexpectedly. Check logs.")
+            st.error("❌ Book generation failed or stopped unexpectedly. Check logs.")
 
     tabs_list = [
-        "📊 Progress Timeline",
-        "📥 Inputs",
-        "🖼️ Figures Gallery",
-        "📝 Outline",
-        "🔗 Citation Map",
-        "📈 Refinement Progress",
+        "📊 Publishing Pipeline",
+        "📥 Proposal & Notes",
+        "🖼️ Diagrams & Plots",
+        "📑 Book Blueprint & TOC",
+        "📚 Reference Map",
+        "📈 Editorial Review Board",
     ]
     tab_timeline, tab_inputs, tab_gallery, tab_outline, tab_citation, tab_refinement = (
         st.tabs(tabs_list)
     )
 
-    # 1. Timeline Tab
     with tab_timeline:
-        st.subheader("Writing Progress")
+        st.subheader("Publishing Progress")
         for index, step in enumerate(steps):
             state_class, icon = (
                 ("finished", "✓")
@@ -758,30 +762,30 @@ else:
                 )
             )
 
-            if step == "Literature Review" and enable_plotting == "Yes":
+            if step == "Technical Ecosystem Research" and enable_plotting == "Yes":
                 st.markdown(
-                    f'<div class="timeline-item {state_class}"><div class="timeline-icon">{icon}</div><p style="font-weight: bold; margin-bottom: 0.25rem;">Literature Review</p></div>',
+                    f'<div class="timeline-item {state_class}"><div class="timeline-icon">{icon}</div><p style="font-weight: bold; margin-bottom: 0.25rem;">Technical Ecosystem Research</p></div>',
                     unsafe_allow_html=True,
                 )
                 with st.expander(
-                    "View Literature Logs",
+                    "View Research Logs",
                     expanded=(index == st.session_state.current_step),
                 ):
-                    if st.session_state.logs["Literature Review"]:
-                        st.code(st.session_state.logs["Literature Review"])
+                    if st.session_state.logs["Technical Ecosystem Research"]:
+                        st.code(st.session_state.logs["Technical Ecosystem Research"])
                     else:
                         st.text("No logs yet.")
 
                 st.markdown(
-                    f'<div class="timeline-item {state_class}"><div class="timeline-icon">{icon}</div><p style="font-weight: bold; margin-bottom: 0.25rem;">Figure Generation</p></div>',
+                    f'<div class="timeline-item {state_class}"><div class="timeline-icon">{icon}</div><p style="font-weight: bold; margin-bottom: 0.25rem;">Diagram & Benchmark Plotting</p></div>',
                     unsafe_allow_html=True,
                 )
                 with st.expander(
-                    "View Figure Logs",
+                    "View Diagram & Plotting Logs",
                     expanded=(index == st.session_state.current_step),
                 ):
-                    if st.session_state.logs["Figure Plotting"]:
-                        st.code(st.session_state.logs["Figure Plotting"])
+                    if st.session_state.logs["Diagram & Benchmark Plotting"]:
+                        st.code(st.session_state.logs["Diagram & Benchmark Plotting"])
                     else:
                         st.text("No logs yet.")
             else:
@@ -799,22 +803,31 @@ else:
                         st.text("No logs yet.")
 
         if not st.session_state.running and st.session_state.get("run_directory"):
-            pdf_path = os.path.join(st.session_state.run_directory, "final_paper.pdf")
+            pdf_path = os.path.join(st.session_state.run_directory, "final_book.pdf")
+            if not os.path.exists(pdf_path):
+                pdf_path = os.path.join(
+                    st.session_state.run_directory, "final_paper.pdf"
+                )
+            md_path = os.path.join(st.session_state.run_directory, "final_book.md")
             latex_directory = os.path.join(
                 st.session_state.run_directory, "latex_writeup"
             )
 
-            if os.path.exists(pdf_path) or os.path.exists(latex_directory):
-                st.markdown("### 📥 Download Results")
-                column_download_1, column_download_2 = st.columns(2)
+            if (
+                os.path.exists(pdf_path)
+                or os.path.exists(md_path)
+                or os.path.exists(latex_directory)
+            ):
+                st.markdown("### 📥 Download Published Outputs")
+                col_dl_1, col_dl_2, col_dl_3 = st.columns(3)
 
                 if os.path.exists(pdf_path):
                     with open(pdf_path, "rb") as file_object:
-                        with column_download_1:
+                        with col_dl_1:
                             st.download_button(
-                                label="📄 Download Final PDF",
+                                label="📄 Download Final Book PDF",
                                 data=file_object.read(),
-                                file_name="final_paper.pdf",
+                                file_name="final_book.pdf",
                                 mime="application/pdf",
                                 key="download_final_pdf_tab",
                             )
@@ -832,58 +845,68 @@ else:
                                 )
                                 zip_file.write(file_path, archive_name)
 
-                    with column_download_2:
+                    with col_dl_2:
                         st.download_button(
-                            label="📦 Download LaTeX Source",
+                            label="📦 Download LaTeX & Chapters (.zip)",
                             data=zip_buffer.getvalue(),
-                            file_name="latex_source.zip",
+                            file_name="book_latex_source.zip",
                             mime="application/zip",
                             key="download_final_latex_tab",
                         )
 
-    # 2. Inputs Tab
+                if os.path.exists(md_path):
+                    with open(md_path, "r", encoding="utf-8") as file_object:
+                        with col_dl_3:
+                            st.download_button(
+                                label="📝 Download Markdown Book (.md)",
+                                data=file_object.read(),
+                                file_name="final_book.md",
+                                mime="text/markdown",
+                                key="download_final_md_tab",
+                            )
+
     with tab_inputs:
-        st.header("📥 User Inputs")
+        st.header("📥 Book Proposal & Technical Notes")
         st.markdown(
-            "<h3 style='background-color: #ffe6e6; padding: 5px; border-radius: 3px;'>Idea</h3>",
+            "<h3 style='background-color: #e0f2fe; padding: 6px; border-radius: 4px;'>Book Proposal</h3>",
             unsafe_allow_html=True,
         )
         st.markdown(
             st.session_state.get(
-                "saved_idea", "*(No input provided or process not started)*"
+                "saved_idea", "*(No proposal provided or process not started)*"
             )
         )
         st.markdown(
-            "<h3 style='background-color: #ffffcc; padding: 5px; border-radius: 3px;'>Experimental Log</h3>",
+            "<h3 style='background-color: #fef3c7; padding: 6px; border-radius: 4px;'>Technical Notes & Benchmarks</h3>",
             unsafe_allow_html=True,
         )
         st.markdown(
             st.session_state.get(
-                "saved_log", "*(No input provided or process not started)*"
+                "saved_log", "*(No technical notes provided or process not started)*"
             )
         )
 
-    # 3. Gallery Tab
     with tab_gallery:
         render_gallery_tab()
 
-    # 4. Outline Tab
     with tab_outline:
-        render_json_file("outline.json", "Paper Outline", "No outline generated yet.")
+        render_json_file(
+            "outline.json",
+            "Book Blueprint & Table of Contents",
+            "No blueprint generated yet.",
+        )
 
-    # 5. Citation Map Tab
     with tab_citation:
         render_json_file(
             os.path.join("literature_agent_output", "citation_map.json"),
-            "Citation Map",
-            "No citation map generated yet.",
+            "Verified Technical Bibliography",
+            "No bibliography map generated yet.",
         )
 
-    # 6. Refinement Tab
     with tab_refinement:
-        st.header("Content & Format Refinement Progress")
+        st.header("Editorial Review Board & Typesetting Refinement")
         if not st.session_state.get("run_directory"):
-            st.info("No refinement progress available yet.")
+            st.info("No editorial refinement progress available yet.")
         else:
             worklog_path = os.path.join(
                 st.session_state.run_directory,
@@ -891,7 +914,7 @@ else:
                 "content_refinement_worklog.json",
             )
 
-            st.markdown("### Content Refinement")
+            st.markdown("### Editorial & Technical Review Iterations")
             columns = st.columns(2)
 
             initial_pdf_path = os.path.join(
@@ -901,8 +924,8 @@ else:
             )
             if os.path.exists(initial_pdf_path):
                 with columns[0]:
-                    with st.expander("Content Refinement V0 (Initial)"):
-                        st.write("Initial draft compiled.")
+                    with st.expander("Manuscript Draft V0 (Initial)"):
+                        st.write("Initial compiled book manuscript.")
                         render_pdf_and_snapshots(
                             initial_pdf_path,
                             os.path.join(
@@ -917,7 +940,7 @@ else:
 
             if os.path.exists(worklog_path):
                 try:
-                    with open(worklog_path, "r") as file_object:
+                    with open(worklog_path, "r", encoding="utf-8") as file_object:
                         worklog_data = json.load(file_object)
 
                     content_versions = list(worklog_data.keys())
@@ -926,23 +949,30 @@ else:
                         entry = worklog_data[version_key]
                         with columns[(index + 1) % 2]:
                             with st.expander(
-                                f"Content Refinement {version_key.upper()}"
+                                f"Editorial Revision {version_key.upper()}"
                             ):
                                 st.write(f"**Outcome:** {entry.get('outcome')}")
                                 st.write(f"**Total Gain:** {entry.get('total_gain')}")
                                 st.write(f"**Total Drop:** {entry.get('total_drop')}")
 
                                 if "scores_before" in entry and "scores_after" in entry:
-                                    st.markdown("**Scores:**")
+                                    st.markdown("**Editorial Review Board Scores:**")
                                     for axis in [
                                         "Overall",
-                                        "Originality",
-                                        "Quality",
-                                        "Clarity",
+                                        "Technical_Depth",
+                                        "Practical_Utility",
+                                        "Code_and_Architecture_Quality",
+                                        "Pedagogical_Clarity",
+                                        "Structural_Coherence",
+                                        "Editorial_Polish",
                                     ]:
-                                        st.write(
-                                            f"- {axis}: {entry['scores_before'].get(axis, 0)} -> {entry['scores_after'].get(axis, 0)}"
-                                        )
+                                        if (
+                                            axis in entry["scores_before"]
+                                            or axis in entry["scores_after"]
+                                        ):
+                                            st.write(
+                                                f"- {axis.replace('_', ' ')}: {entry['scores_before'].get(axis, 0)} -> {entry['scores_after'].get(axis, 0)}"
+                                            )
 
                                 render_pdf_and_snapshots(
                                     os.path.join(
@@ -980,13 +1010,14 @@ else:
                     )
                     if os.path.exists(format_worklog_path):
                         st.info(
-                            f"💡 `Content Refinement {final_selected_version}` is selected at the output of the content refinement phase, now move on to formatting refinement..."
+                            f"💡 `Editorial Revision {final_selected_version}` selected, proceeding to production typesetting QA..."
                         )
 
-                        st.markdown("### Format Refinement")
-
+                        st.markdown("### Production Typesetting QA")
                         format_iterations = []
-                        with open(format_worklog_path, "r") as file_object:
+                        with open(
+                            format_worklog_path, "r", encoding="utf-8"
+                        ) as file_object:
                             for version_key, entry in json.load(file_object).items():
                                 format_iterations.append(
                                     {
@@ -1010,73 +1041,30 @@ else:
                                 )
 
                         format_columns = st.columns(2)
-
-                        with format_columns[0]:
-                            with st.expander("Format Refinement V0 (Initial)"):
-                                st.write("Input from content refinement phase.")
-                                source_pdf_name = (
-                                    "initial_draft.pdf"
-                                    if final_selected_version == "V0 (Initial)"
-                                    else f"refined_paper_v{final_selected_version[1:]}.pdf"
-                                )
-                                pdf_path = os.path.join(
-                                    st.session_state.run_directory,
-                                    "content_refinement_workdir",
-                                    source_pdf_name,
-                                )
-
-                                if os.path.exists(pdf_path):
-                                    with open(pdf_path, "rb") as file_object:
-                                        st.download_button(
-                                            label="📥 Download PDF",
-                                            data=file_object.read(),
-                                            file_name=source_pdf_name,
-                                            mime="application/pdf",
-                                            key="download_format_0",
-                                        )
-
                         for index, entry in enumerate(format_iterations):
-                            with format_columns[(index + 1) % 2]:
+                            with format_columns[index % 2]:
                                 with st.expander(
-                                    f"Format Refinement V{entry['iteration']}"
+                                    f"Typesetting QA V{entry['iteration']}"
                                 ):
                                     if "figure_and_tables" in entry["feedback"]:
-                                        st.markdown("**Figure & Table Issues:**")
+                                        st.markdown("**Diagram, Code & Table QA:**")
                                         st.json(entry["feedback"]["figure_and_tables"])
                                     render_pdf_and_snapshots(
                                         entry["pdf_path"],
                                         entry["screenshots_directory"],
                                         f"download_format_{entry['iteration']}",
                                     )
-
-                        if os.path.exists(
-                            os.path.join(
-                                st.session_state.run_directory,
-                                "content_refinement_workdir",
-                                "final_refined_paper.pdf",
-                            )
-                        ):
-                            if format_iterations:
-                                max_iter = max(
-                                    entry["iteration"] for entry in format_iterations
-                                )
-                                st.info(
-                                    f"💡 `Format Refinement V{max_iter}` is selected as the final output of this pipeline."
-                                )
-                            else:
-                                st.info(
-                                    "💡 `final_refined_paper.pdf` is selected as the final output of this pipeline."
-                                )
-                        else:
-                            st.info(
-                                "💡 Refinement pipeline ended without producing a final separated PDF."
-                            )
-
                 except Exception as exception_object:
                     st.error(f"Error processing refinement data: {exception_object}")
             elif not st.session_state.running and not os.path.exists(initial_pdf_path):
-                st.info("No refinement progress available yet.")
+                st.info("No editorial refinement progress available yet.")
 
     handle_live_execution(
-        steps, email_input, selected_template, selected_model, enable_plotting
+        steps,
+        email_input,
+        selected_template,
+        selected_model,
+        selected_audience,
+        selected_style,
+        enable_plotting,
     )

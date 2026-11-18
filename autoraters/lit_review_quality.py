@@ -14,12 +14,31 @@
 
 import json
 import os
-import tqdm
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pydantic import BaseModel, Field
 
-from pydantic import BaseModel, Field
+try:
+    import tqdm
+except ImportError:
+
+    class _TqdmFallback:
+        @staticmethod
+        def tqdm(iterable, **kwargs):
+            return iterable
+
+    tqdm = _TqdmFallback()  # type: ignore
+
+try:
+    from pydantic import BaseModel, Field
+except ImportError:
+
+    class BaseModel:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    def Field(*args, **kwargs):
+        return None
 
 from utils.llm_backend_utils import call_llm_with_pdf
 from autoraters.prompts.lit_review_quality_prompts import (

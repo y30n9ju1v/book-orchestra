@@ -14,19 +14,23 @@
 
 import os
 import json
-import numpy as np
+
+try:
+    import numpy as np
+except ImportError:
+    np = None  # type: ignore
 
 from utils.gemini_utils import call_gemini_with_text_prompt
 
-# --- AGENTREVIEW SPECIFIC CONSTANTS (From role_descriptions.py) ---
+# --- TECHNICAL BOOK EDITORIAL & ENGINEERING REVIEW BOARD RUBRICS ---
 
 SCORE_CALCULATION = {
-    10: "This study is among the top 2% of all papers. It is one of the most thorough I have seen. It changed my thinking on this topic. I would fight for it to be accepted",
-    8: "This study is among the top 10% of all papers. It provides sufficient support for all of its claims/arguments. Some extra experiments are needed, but not essential. The method is highly original and generalizable to various fields. It deepens the understanding of some phenomenons or lowers the barriers to an existing research direction",
-    6: "This study provides sufficient support for its major claims/arguments, some minor points may need extra support or details. The method is moderately original and generalizable to various relevant fields. The work it describes is not particularly interesting and/or novel, so it will not be a big loss if people don’t see it in this conference",
-    5: "Some of the main claims/arguments are not sufficiently supported, there are major technical/methodological problems. The proposed method is somewhat original and generalizable to various relevant fields. I am leaning towards rejection, but I can be persuaded if my co-reviewers think otherwise",
-    3: "This paper makes marginal contributions",
-    1: "This study is not yet sufficiently thorough to warrant publication or is not relevant to the conference",
+    10: "Flagship publication quality (top 2% of technical books, e.g., DDIA / Systems Performance caliber). Deep systems internals, production-hardened code, crystal-clear mental models, and authoritative trade-off analysis.",
+    8: "Strong publication-ready manuscript (top 10%). Technically accurate, well-structured pedagogy, solid code listings and benchmarks; only minor polish or clarifying examples needed.",
+    6: "Solid draft with good technical substance, but some chapters lack production failure-mode depth, annotated code commentary, or cohesive pedagogical transitions.",
+    5: "Major structural, pedagogical, or technical gaps: superficial explanations, fragile/incomplete code examples, missing trade-off analysis, or inconsistent terminology across chapters.",
+    3: "Fragmentary or shallow draft resembling blog summaries rather than an authoritative engineering book.",
+    1: "Not ready for publication; severe technical inaccuracies, ungrounded claims, or broken structure.",
 }
 
 AGENT_REVIEW_RUBRICS = (
@@ -38,39 +42,90 @@ AGENT_REVIEW_RUBRICS = (
     f"* 1: {SCORE_CALCULATION[1]}. "
 )
 
-# --- PROMPT GENERATORS ---
+REVIEW_BOARD_PERSONAS = [
+    (
+        "principal_engineer",
+        "Persona 1 — Principal Systems & Software Engineer (Technical Reviewer): "
+        "Scrutinize architectural invariants, concurrency/memory/network trade-offs, capacity math, "
+        "production failure modes, security/observability gaps, and whether code listings are idiomatic, "
+        "robust (timeouts, error handling, resource bounds), and grounded in the benchmark notes.",
+    ),
+    (
+        "developmental_editor",
+        "Persona 2 — Executive Acquisitions & Developmental Editor (O'Reilly / Manning Style): "
+        "Scrutinize reader progression, audience calibration for senior engineers, chapter openings "
+        "(concrete production hooks + learning objectives), mental-model scaffolding, comparative trade-off tables, "
+        "callout box utility, and chapter-ending summaries/exercises.",
+    ),
+    (
+        "production_editor",
+        "Persona 3 — Senior Technical Production & Copy Editor: "
+        "Scrutinize terminology consistency across chapters, precision and clarity of prose, "
+        "avoidance of marketing hype or hand-wavy filler, cross-reference coherence, figure/table integration, "
+        "and code/caption readability.",
+    ),
+]
+
+
+def _mean(values):
+    if not values:
+        return 0.0
+    if np is not None:
+        return float(np.mean(values))
+    return float(sum(values)) / len(values)
 
 
 def get_agentreview_system_prompt(
-    is_knowledgeable=True, is_responsible=True, is_benign=True
+    is_knowledgeable=True,
+    is_responsible=True,
+    is_benign=True,
+    persona: str = None,
 ):
     """
-    Constructs the system prompt based on AgentReview's role_descriptions.py.
-    Defaults to the 'Best Case' reviewer (Knowledgeable, Responsible, Benign).
+    Constructs the system prompt for a Technical Book Editorial & Engineering Review Board member.
     """
-    bio = "You are a reviewer. You write peer review of academic papers by evaluating their technical quality, originality, and clarity.\n\n"
+    bio = (
+        "You are a senior member of a Technical Book Editorial & Engineering Review Board "
+        "(O'Reilly, Manning, Addison-Wesley standard) evaluating an IT/Engineering book manuscript.\n\n"
+    )
+
+    if persona:
+        for pid, pdesc in REVIEW_BOARD_PERSONAS:
+            if pid == persona:
+                bio += f"Editorial Role:\n{pdesc}\n\n"
+                break
 
     if is_knowledgeable:
-        bio += "Knowledgeability: You are knowledgeable, with a strong background and a PhD degree in the subject areas related to this paper. You possess the expertise necessary to scrutinize and provide insightful feedback to this paper.\n\n"
+        bio += (
+            "Technical Mastery: You are a Principal/Staff engineer and veteran technical editor "
+            "with deep expertise in distributed systems, software architecture, cloud infrastructure, "
+            "and AI/ML engineering systems.\n\n"
+        )
     else:
-        bio += "Knowledgeability: You are not knowledgeable and do not have strong background in the subject areas related to this paper.\n\n"
+        bio += "Technical Mastery: You are an external generalist reviewer unfamiliar with specialized systems internals.\n\n"
 
     if is_responsible:
-        bio += "Responsibility: As a responsible reviewer, you highly responsibly write paper reviews. You meticulously assess a research paper's technical accuracy, innovation, and relevance. You thoroughly read the paper, critically analyze the methodologies, and carefully consider the paper's contribution to the field.\n\n"
+        bio += (
+            "Review Rigor: You read every chapter, code listing, table, and callout meticulously. "
+            "You identify hand-wavy explanations, missing edge cases, ungrounded claims, pedagogical leaps, "
+            "and structural inconsistencies.\n\n"
+        )
     else:
-        bio += "Responsibility: As a lazy reviewer, your reviews tend to be superficial and hastily done. Your assessments might overlook critical details, lack depth in analysis, fail to recognize novel contributions, or offer generic feedback.\n\n"
+        bio += "Review Rigor: You skim superficially and give brief high-level impressions.\n\n"
 
     if is_benign:
-        bio += "Intention: As a benign reviewer, your approach to reviewing is guided by a genuine intention to aid authors in enhancing their work. You provide detailed, constructive feedback, aimed at both validating robust research and guiding authors to refine and improve their work. You are also critical of technical flaws in the paper.\n\n"
+        bio += (
+            "Editorial Intention: Your goal is to help the author elevate this manuscript to flagship "
+            "publishing quality through specific, concrete, actionable critiques.\n\n"
+        )
     else:
-        bio += "Intention: As a mean reviewer, your reviewing style is often harsh and overly critical, with a tendency towards negative bias. Your reviews may focus excessively on faults, sometimes overlooking the paper's merits.\n\n"
+        bio += "Editorial Intention: You are an unforgiving critic focused primarily on flaws.\n\n"
 
     bio += f"## Rubrics for Overall Rating\n{AGENT_REVIEW_RUBRICS}"
 
     return bio
 
 
-# We adapt the instruction form to request JSON but strictly follow AgentReview's content structure.
 AGENTREVIEW_INSTRUCTIONS = """
 Respond in the following format:
 
@@ -82,31 +137,56 @@ REVIEW JSON:
 <JSON>
 ```
 
-In <THOUGHT>, first briefly discuss your intuitions and reasoning for the evaluation.
-Detail your high-level arguments, necessary choices and desired outcomes of the review.
-Do not make generic comments here, but be specific to your current paper.
-Treat this as the note-taking phase of your review.
+In <THOUGHT>, first analyze the manuscript chapter by chapter from the perspectives of a Principal Systems Engineer and a Senior Technical Book Editor.
+Be concrete and specific to this manuscript (cite chapter names, code listings, tables, or architectural claims).
 
-In <JSON>, provide the review in JSON format with the following fields in the order:
-- "Summary": A summary of the paper content and its contributions.
-- "Strengths": A list of strengths of the paper.
-- "Weaknesses": A list of weaknesses of the paper.
-- "Originality": A rating from 1 to 4 (low, medium, high, very high).
-- "Quality": A rating from 1 to 4 (low, medium, high, very high).
-- "Clarity": A rating from 1 to 4 (low, medium, high, very high).
-- "Significance": A rating from 1 to 4 (low, medium, high, very high).
-- "Questions": A set of clarifying questions to be answered by the paper authors.
-- "Limitations": A set of limitations and potential negative societal impacts of the work.
-- "Ethical Concerns": A boolean value indicating whether there are ethical concerns.
-- "Soundness": A rating from 1 to 4 (poor, fair, good, excellent).
-- "Presentation": A rating from 1 to 4 (poor, fair, good, excellent).
-- "Contribution": A rating from 1 to 4 (poor, fair, good, excellent).
-- "Overall": A rating from 1 to 10 (very strong reject to award quality).
+In <JSON>, provide the review in JSON format with the following fields:
+- "Summary": A summary of the book manuscript's scope, target audience, and technical execution.
+- "Strengths": A list of concrete engineering and pedagogical strengths.
+- "Weaknesses": A list of concrete technical, architectural, code, or pedagogical weaknesses.
+- "Technical_Depth": A rating from 1 to 4 (shallow, adequate, deep, authoritative systems rigor).
+- "Practical_Utility": A rating from 1 to 4 (theoretical only, helpful, production-ready, indispensable field guide).
+- "Code_and_Architecture_Quality": A rating from 1 to 4 (poor, fair, strong, exemplary).
+- "Pedagogical_Clarity": A rating from 1 to 4 (disjointed, readable, well-scaffolded, masterclass).
+- "Structural_Coherence": A rating from 1 to 4 (fragmented, acceptable, cohesive, seamless progression).
+- "Editorial_Polish": A rating from 1 to 4 (rough draft, decent, clean, print-ready).
+- "Originality": A rating from 1 to 4 (mirrors Technical_Depth / fresh synthesis).
+- "Quality": A rating from 1 to 4 (mirrors Code_and_Architecture_Quality).
+- "Clarity": A rating from 1 to 4 (mirrors Pedagogical_Clarity).
+- "Significance": A rating from 1 to 4 (mirrors Practical_Utility).
+- "Soundness": A rating from 1 to 4 (engineering accuracy and grounding, 1 to 4).
+- "Presentation": A rating from 1 to 4 (mirrors Editorial_Polish).
+- "Contribution": A rating from 1 to 4 (industry value of the book, 1 to 4).
+- "Questions": A list of specific technical or editorial questions the author should resolve directly in the chapters.
+- "Limitations": A list of scope gaps, missing failure modes, or operational caveats that should be transparently discussed.
+- "Ethical Concerns": A boolean value indicating whether there are security, safety, licensing, or ethical concerns.
+- "Overall": A rating from 1 to 10 (rough incomplete draft to flagship technical book).
 - "Confidence": A rating from 1 to 5 (low, medium, high, very high, absolute).
-- "Decision": A decision that has to be one of the following: Accept, Reject.
+- "Decision": Exactly one of: "Accept" (ready/near-ready for publication) or "Reject" (needs major revision).
 
-For the "Decision" field, don't use Weak Accept, Borderline Accept, Borderline Reject, or Strong Reject. Instead, only use Accept or Reject.
-This JSON will be automatically parsed, so ensure the format is precise."""
+Ensure valid JSON formatting so it can be parsed automatically."""
+
+
+def _populate_score_aliases(review: dict) -> dict:
+    """Ensures both Book-native axes and legacy compatibility axes exist on review dict."""
+    if not isinstance(review, dict):
+        return review
+
+    alias_pairs = [
+        ("Technical_Depth", "Originality"),
+        ("Code_and_Architecture_Quality", "Quality"),
+        ("Pedagogical_Clarity", "Clarity"),
+        ("Practical_Utility", "Significance"),
+        ("Structural_Coherence", "Soundness"),
+        ("Editorial_Polish", "Presentation"),
+        ("Practical_Utility", "Contribution"),
+    ]
+    for book_key, legacy_key in alias_pairs:
+        if book_key not in review and legacy_key in review:
+            review[book_key] = review[legacy_key]
+        elif legacy_key not in review and book_key in review:
+            review[legacy_key] = review[book_key]
+    return review
 
 
 def perform_review_agentreview(
@@ -117,15 +197,10 @@ def perform_review_agentreview(
     reviewer_system_prompt=None,
     review_instruction_form=AGENTREVIEW_INSTRUCTIONS,
 ):
-    print(f"Start paper reviewing using model: `{model_name}`")
-    # Generate the "Best Case" AgentReview persona
-    if reviewer_system_prompt is None:
-        reviewer_system_prompt = get_agentreview_system_prompt(
-            is_knowledgeable=True, is_responsible=True, is_benign=True
-        )
+    print(f"Start Technical Book Editorial Board review using model: `{model_name}`")
     base_prompt = review_instruction_form
     base_prompt += f"""
-Here is the paper you are asked to review:
+Here is the technical book manuscript you are asked to review:
 ```
 {text}
 ```"""
@@ -133,20 +208,39 @@ Here is the paper you are asked to review:
     if num_review_ensemble > 1:
         parsed_reviews = []
         for i in range(num_review_ensemble):
-            print(f"Generating ensemble review {i + 1}/{num_review_ensemble}...")
+            persona_id = REVIEW_BOARD_PERSONAS[i % len(REVIEW_BOARD_PERSONAS)][0]
+            sys_prompt = reviewer_system_prompt or get_agentreview_system_prompt(
+                is_knowledgeable=True,
+                is_responsible=True,
+                is_benign=True,
+                persona=persona_id,
+            )
+            print(
+                f"Generating Editorial Review Board assessment {i + 1}/{num_review_ensemble} ({persona_id})..."
+            )
             response = call_gemini_with_text_prompt(
                 prompt=base_prompt,
                 model_name=model_name,
                 generation_configs={
                     "temperature": temperature,
-                    "system_instruction": reviewer_system_prompt,
+                    "system_instruction": sys_prompt,
                 },
             )
-            parsed_reviews.append(response["parsed_response"])
+            parsed = _populate_score_aliases(response["parsed_response"])
+            parsed_reviews.append(parsed)
+
         review = get_meta_review(model_name, temperature, parsed_reviews)
         if review is None:
             review = parsed_reviews[0]
-        for score, limits in [
+        review = _populate_score_aliases(review)
+
+        score_specs = [
+            ("Technical_Depth", (1, 4)),
+            ("Practical_Utility", (1, 4)),
+            ("Code_and_Architecture_Quality", (1, 4)),
+            ("Pedagogical_Clarity", (1, 4)),
+            ("Structural_Coherence", (1, 4)),
+            ("Editorial_Polish", (1, 4)),
             ("Originality", (1, 4)),
             ("Quality", (1, 4)),
             ("Clarity", (1, 4)),
@@ -156,42 +250,53 @@ Here is the paper you are asked to review:
             ("Contribution", (1, 4)),
             ("Overall", (1, 10)),
             ("Confidence", (1, 5)),
-        ]:
+        ]
+        for score, limits in score_specs:
             scores = []
             for r in parsed_reviews:
-                if score in r:
+                if isinstance(r, dict) and score in r:
                     try:
-                        val = int(r[score])
+                        val = int(round(float(r[score])))
                         if limits[0] <= val <= limits[1]:
                             scores.append(val)
                     except (ValueError, TypeError):
                         pass
             if scores:
-                review[score] = int(round(np.mean(scores)))
+                review[score] = int(round(_mean(scores)))
+        review = _populate_score_aliases(review)
     else:
+        sys_prompt = reviewer_system_prompt or get_agentreview_system_prompt(
+            is_knowledgeable=True,
+            is_responsible=True,
+            is_benign=True,
+            persona="principal_engineer",
+        )
         response = call_gemini_with_text_prompt(
             prompt=base_prompt,
             model_name=model_name,
             generation_configs={
                 "temperature": temperature,
-                "system_instruction": reviewer_system_prompt,
+                "system_instruction": sys_prompt,
             },
         )
-        review = response["parsed_response"]
+        review = _populate_score_aliases(response["parsed_response"])
     return review
 
 
-meta_reviewer_system_prompt = """You are a very knowledgeable and experienced area chair at a top-tier machine learning conference.
-You are in charge of meta-reviewing a paper that was reviewed by {reviewer_count} reviewers.
-Your job is to aggregate the reviews into a single meta-review in the same format.
-You are an inclusive area chair. You tend to hear from all reviewers' opinions and combine them with your own judgments to make the final decision."""
+# Book-oriented alias
+perform_book_editorial_review = perform_review_agentreview
+
+meta_reviewer_system_prompt = """You are the Editor-in-Chief and Principal Systems Director at a premier technical publisher (O'Reilly / Manning / Addison-Wesley).
+You are synthesizing {reviewer_count} independent assessments from the Technical Book Editorial Review Board (Principal Engineer, Developmental Editor, and Production/Copy Editor).
+Aggregate all feedback into one balanced, actionable meta-review JSON in the exact requested schema, highlighting high-leverage engineering and pedagogical improvements."""
 
 
 def get_meta_review(model, temperature, reviews):
     review_text = ""
     for i, r in enumerate(reviews):
+        persona_name = REVIEW_BOARD_PERSONAS[i % len(REVIEW_BOARD_PERSONAS)][0]
         review_text += f"""
-Review {i + 1}/{len(reviews)}:
+Review {i + 1}/{len(reviews)} ({persona_name}):
 ```
 {json.dumps(r)}
 ```
@@ -208,4 +313,4 @@ Review {i + 1}/{len(reviews)}:
         },
     )
     meta_review = response["parsed_response"]
-    return meta_review
+    return _populate_score_aliases(meta_review)

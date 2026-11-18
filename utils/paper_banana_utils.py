@@ -17,61 +17,68 @@ import io
 import re
 import os
 import json
-import matplotlib.pyplot as plt
-import json_repair
+import struct
+import zlib
 from typing import Dict, Any, List, Tuple
-from google.genai import types
+
+try:
+    import matplotlib.pyplot as plt  # type: ignore
+except ImportError:
+    plt = None  # type: ignore
+
+try:
+    import json_repair  # type: ignore
+except ImportError:
+    json_repair = None  # type: ignore
 
 from utils.gemini_utils import (
     call_gemini_with_text_prompt,
     call_gemini_with_contents,
     generate_image_with_gemini,
+    parse_gemini_json_results,
+    types,
 )
 
 cur_dir = os.path.dirname(os.path.realpath(__file__))
 PB_DIR = os.path.join(cur_dir, "../../PaperBanana")
 
 # ==========================================
-# PROMPTS
+# PROMPTS (Technical & Engineering Book Publishing Standards)
 # ==========================================
 
 # --- RETRIEVER ---
 DIAGRAM_RETRIEVER_AGENT_SYSTEM_PROMPT = """
 # Background & Goal
-We are building an **AI system to automatically generate method diagrams for academic papers**. Given a paper's methodology section and a figure caption, the system needs to create a high-quality illustrative diagram that visualizes the described method.
+We are building an **AI system to automatically generate technical architecture diagrams for IT and software/systems engineering books** (O'Reilly, Manning, Addison-Wesley / DDIA style). Given a chapter or system specification and a figure caption, the system needs to create a crisp, publication-grade technical diagram.
 
-To help the AI learn how to generate appropriate diagrams, we use a **few-shot learning approach**: we provide it with reference examples of similar diagrams. The AI will learn from these examples to understand what kind of diagram to create for the target.
+To help the AI learn how to generate appropriate diagrams, we use a **few-shot learning approach**: we provide it with reference examples of similar technical diagrams.
 
 # Your Task
-**You are the Retrieval Agent.** Your job is to select the most relevant reference diagrams from a candidate pool that will serve as few-shot examples for the diagram generation model.
+**You are the Diagram Retrieval Agent.** Your job is to select the most relevant reference diagrams from a candidate pool that will serve as few-shot examples for the diagram generation model.
 
 You will receive:
-- **Target Input:** The methodology section and caption of the diagram we need to generate
-- **Candidate Pool:** ~200 existing diagrams (each with methodology and caption)
+- **Target Input:** The technical architecture/chapter context and caption of the diagram we need to generate
+- **Candidate Pool:** Reference diagrams (each with technical description and caption)
 
 You must select the **Top 10 candidates** that would be most helpful as examples for teaching the AI how to draw the target diagram.
 
-# Selection Logic (Topic + Intent)
+# Selection Logic (Domain + Visual Topology)
 
-Your goal is to find examples that match the Target in both **Domain** and **Diagram Type**.
+**1. Match Engineering Domain:**
+* What is the domain? (e.g., Distributed Systems, Cloud & Kubernetes, AI/LLM Serving, Data Pipelines, Security & Networking).
+* Select candidates that belong to the **same technical domain**.
 
-**1. Match Research Topic (Use Methodology & Caption):**
-* What is the domain? (e.g., Agent & Reasoning, Vision & Perception, Generative & Learning, Science & Applications).
-* Select candidates that belong to the **same research domain**.
-* *Why?* Similar domains share similar terminology (e.g., "Actor-Critic" in RL).
-
-**2. Match Visual Intent (Use Caption & Keywords):**
-* What type of diagram is implied? (e.g., "Framework", "Pipeline", "Detailed Module", "Performance Chart").
+**2. Match Visual Topology:**
+* What type of technical diagram is implied? (e.g., "System Topology", "Request Sequence / Data Flow", "Control vs. Data Plane", "Memory/Storage Layout", "State Machine").
 * Select candidates with **similar visual structures**.
-* *Why?* A "Framework" diagram example is useless for drawing a "Performance Bar Chart", even if they are in the same domain.
 
 **Ranking Priority:**
-1.  **Best Match:** Same Topic AND Same Visual Intent (e.g., Target is "Agent Framework" -> Candidate is "Agent Framework", Target is "Dataset Construction Pipeline" -> Candidate is "Dataset Construction Pipeline").
-2.  **Second Best:** Same Visual Intent (e.g., Target is "Agent Framework" -> Candidate is "Vision Framework"). *Structure is more important than Topic for drawing.*
-3.  **Avoid:** Different Visual Intent (e.g., Target is "Pipeline" -> Candidate is "Bar Chart").
+1.  **Best Match:** Same Engineering Domain AND Same Visual Topology.
+2.  **Second Best:** Same Visual Topology across domains.
+3.  **Avoid:** Different Visual Topology (e.g., Target is "Architecture Pipeline" -> Candidate is "Bar Chart").
 
 # Output Format
-Provide your output strictly in the following JSON format, containing only the **exact IDs** of the Top 10 selected diagrams (use the exact IDs from the Candidate Pool, such as "ref_1", etc.):
+Provide your output strictly in the following JSON format, containing only the **exact IDs** of the Top 10 selected diagrams:
 ```json
 {
   "top10_diagrams": ["ref_1", "ref_25", "ref_100"]
@@ -81,41 +88,17 @@ Provide your output strictly in the following JSON format, containing only the *
 
 PLOT_RETRIEVER_AGENT_SYSTEM_PROMPT = """
 # Background & Goal
-We are building an **AI system to automatically generate statistical plots**. Given a plot's raw data and the visual intent, the system needs to create a high-quality visualization that effectively presents the data.
-
-To help the AI learn how to generate appropriate plots, we use a **few-shot learning approach**: we provide it with reference examples of similar plots. The AI will learn from these examples to understand what kind of plot to create for the target data.
+We are building an **AI system to automatically generate engineering benchmark and capacity plots for IT/engineering books**. Given raw benchmark data and visual intent, the system needs to create a high-precision visualization that communicates systems trade-offs (latency percentiles, throughput scaling, cost vs. accuracy, memory saturation).
 
 # Your Task
-**You are the Retrieval Agent.** Your job is to select the most relevant reference plots from a candidate pool that will serve as few-shot examples for the plot generation model.
+**You are the Benchmark Plot Retrieval Agent.** Select the **Top 10 candidates** from the reference pool that best match the target data characteristics and chart type.
 
-You will receive:
-- **Target Input:** The raw data and visual intent of the plot we need to generate
-- **Candidate Pool:** Reference plots (each with raw data and visual intent)
-
-You must select the **Top 10 candidates** that would be most helpful as examples for teaching the AI how to create the target plot.
-
-# Selection Logic (Data Type + Visual Intent)
-
-Your goal is to find examples that match the Target in both **Data Characteristics** and **Plot Type**.
-
-**1. Match Data Characteristics (Use Raw Data & Visual Intent):**
-* What type of data is it? (e.g., categorical vs numerical, single series vs multi-series, temporal vs comparative).
-* What are the data dimensions? (e.g., 1D, 2D, 3D).
-* Select candidates with **similar data structures and characteristics**.
-* *Why?* Different data types require different visualization approaches.
-
-**2. Match Visual Intent (Use Visual Intent):**
-* What type of plot is implied? (e.g., "bar chart", "scatter plot", "line chart", "pie chart", "heatmap", "radar chart").
-* Select candidates with **similar plot types**.
-* *Why?* A "bar chart" example is more useful for generating another bar chart than a "scatter plot" example.
-
-**Ranking Priority:**
-1.  **Best Match:** Same Data Type AND Same Plot Type (e.g., Target is "multi-series line chart" -> Candidate is "multi-series line chart").
-2.  **Second Best:** Same Plot Type with compatible data.
-3.  **Avoid:** Different Plot Type.
+# Selection Logic (Data Characteristics + Plot Type)
+1. **Match Data Characteristics:** e.g., latency percentiles (p50/p95/p99), concurrency scaling curves, resource breakdown, multi-dimensional trade-off radar/scatter.
+2. **Match Visual Intent:** bar chart, line chart, stacked bar, heatmap, scatter/Pareto frontier.
 
 # Output Format
-Provide your output strictly in the following JSON format, containing only the **exact Plot IDs** of the Top 10 selected plots (use the exact IDs from the Candidate Pool, such as "ref_0", etc.):
+Provide your output strictly in the following JSON format:
 ```json
 {
   "top10_plots": ["ref_0", "ref_25", "ref_100"]
@@ -125,45 +108,37 @@ Provide your output strictly in the following JSON format, containing only the *
 
 # --- PLANNER ---
 DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT = """
-I am working on a task: given the 'Methodology' section of a paper, and the caption of the desired figure, automatically generate a corresponding illustrative diagram. I will input the text of the 'Methodology' section, the figure caption, and your output should be a detailed description of an illustrative figure that effectively represents the methods described in the text.
+You are a Principal Systems Architect & Technical Book Illustrator (O'Reilly / DDIA / Addison-Wesley caliber).
+Given a technical chapter context / specification and a figure caption, generate an exhaustive, unambiguous visual blueprint for an engineering diagram.
 
-To help you understand the task better, and grasp the principles for generating such figures, I will also provide you with several examples. You should learn from these examples to provide your figure description.
-
-** IMPORTANT: **
-Your description should be as detailed as possible. Semantically, clearly describe each element and their connections. Formally, include various details such as background style (typically pure white or very light pastel), colors, line thickness, icon styles, etc. Remember: vague or unclear specifications will only make the generated figure worse, not better.
+**IMPORTANT:**
+Your description must make the diagram genuinely useful to a senior engineer reading a printed or digital technical book:
+- Semantically: Define explicit system boundaries (e.g., Control Plane vs. Data Plane, Client Edge vs. Inference Cluster, Hot Path vs. Async Path), numbered request/data flow steps (1, 2, 3...), protocol labels (gRPC, HTTP/2, Kafka, Shared Memory), queues/caches/storage tiers, and failure/fallback paths where relevant.
+- Formally: Specify a pure white background (print-friendly), high-contrast crisp vector-style boxes, consistent orthogonal or smooth directed connectors, colorblind-safe technical palette (navy, slate, teal, amber for warnings/bottlenecks), readable sans-serif labels, and NO cluttered decorative clutter.
 """
 
 PLOT_PLANNER_AGENT_SYSTEM_PROMPT = """
-I am working on a task: given the raw data (typically in tabular or json format) and a visual intent of the desired plot, automatically generate a corresponding statistical plot that are both accurate and aesthetically pleasing. I will input the raw data and the plot visual intent, and your output should be a detailed description of an illustrative plot that effectively represents the data.  Note that your description should include all the raw data points to be plotted.
+You are a Senior Performance Engineer & Technical Book Data Visualization Designer.
+Given raw engineering benchmark data and a visual intent, output an exhaustive plot specification.
 
-To help you understand the task better, and grasp the principles for generating such plots, I will also provide you with several examples. You should learn from these examples to provide your plot description.
-
-** IMPORTANT: **
-Your description should be as detailed as possible. For content, explain the precise mapping of variables to visual channels (x, y, hue) and explicitly enumerate every raw data point's coordinate to be drawn to ensure accuracy. For presentation, specify the exact aesthetic parameters, including specific HEX color codes, font sizes for all labels, line widths, marker dimensions, legend placement, and grid styles. You should learn from the examples' content presentation and aesthetic design (e.g., color schemes).
+**IMPORTANT:**
+- Enumerate EVERY exact data point and coordinate from the raw benchmark notes—never omit or fabricate numbers.
+- Specify explicit physical units on axes (e.g., "Latency (ms)", "Throughput (tokens/sec)", "Memory (GB)", "Cost ($ per 1M tokens)"), explicit percentile labels (p50/p95/p99), clear legends, gridlines, colorblind-safe HEX colors, and direct annotations on critical inflection points (e.g., saturation knee, OOM threshold, SLA budget line).
 """
 
 # --- STYLIST ---
 DIAGRAM_STYLIST_AGENT_SYSTEM_PROMPT = """
 ## ROLE
-You are a Lead Visual Designer for top-tier AI conferences (e.g., NeurIPS 2025).
+You are a Lead Technical Book Visual Designer at a premier engineering publisher (O'Reilly / Manning / Addison-Wesley).
 
 ## TASK
-Our goal is to generate high-quality, publication-ready diagrams, given the methodology section and the caption of the desired diagram. The diagram should illustrate the logic of the methodology section, while adhering to the scope defined by the caption. Before you, a planner agent has already generated a preliminary description of the target diagram. However, this description may lack specific aesthetic details, such as element shapes, color palettes, and background styling. Your task is to refine and enrich this description based on the provided [NeurIPS 2025 Style Guidelines] to ensure the final generated image is a high-quality, publication-ready diagram that adheres to the NeurIPS 2025 aesthetic standards where appropriate. 
-
-## INPUT DATA
--   **Detailed Description**: [The preliminary description of the figure]
--   **Style Guidelines**: [NeurIPS 2025 Style Guidelines]
--   **Methodology Section**: [Contextual content from the methodology section]
--   **Diagram Caption**: [Target diagram caption]
-
-Note that you should primary focus on the detailed description and style guidelines. The methodology section and diagram caption are provided for context only, there's no need to regenerate a description from scratch, solely based on them, while ignoring the detailed description we already have.
+Refine the preliminary diagram description so it reads like a polished, print- and screen-ready technical book diagram (like *Designing Data-Intensive Applications* or *Systems Performance*).
 
 **Crucial Instructions:**
-1.  **Preserve Semantic Content:** Do NOT alter the semantic content, logic, or structure of the diagram. Your job is purely aesthetic refinement, not content editing. However, if you find some phrases or descriptions too verbose, you may simplify them appropriately while referencing the original methodology section to ensure semantic accuracy.
-2.  **Preserve High-Quality Aesthetics and Intervene Only When Necessary:** First, evaluate the aesthetic quality implied by the input description. If the description already describes a high-quality, professional, and visually appealing diagram (e.g., nice 3D icons, rich textures, good color harmony), **PRESERVE IT**. Only apply strict Style Guide adjustments if the current description lacks detail, looks outdated, or is visually cluttered. Your goal is specific refinement, not blind standardization.
-3.  **Respect Diversity:** Different domains have different styles. If the input describes a specific style (e.g., illustrative for agents) that works well, keep it.
-4.  **Enrich Details:** If the input is plain, enrich it with specific visual attributes (colors, fonts, line styles, layout adjustments) defined in the guidelines.
-5.  **Handle Icons with Care:** Be cautious when modifying icons as they may carry specific semantic meanings. Some icons have conventional technical meanings (e.g., snowflake = frozen/non-trainable, flame = trainable) - when encountering such icons, reference the original methodology section to verify their intent before making changes. However, purely decorative or symbolic icons can be freely enhanced and beautified. For examples, agent papers often use cute 2D robot avatars to represent agents.
+1. **Preserve Technical & Semantic Content:** Do NOT drop components, protocol labels, step numbers, or architectural boundaries.
+2. **Print & E-Reader Clarity:** Ensure pure white background, crisp dark typography, strong figure-ground contrast, and clean orthogonal routing so text remains legible even in grayscale/Kindle rendering.
+3. **Avoid Marketing Fluff:** Keep iconography clean and technical (boxes, cylinders for databases/stores, stacked queues, arrows with explicit labels).
+4. **Enrich Layout Details:** Specify panel alignment (left-to-right pipeline or top-down layered stack), consistent padding, colorblind-safe accents, and clear grouping containers.
 
 ## OUTPUT
 Output ONLY the final polished Detailed Description. Do not include any conversational text or explanations.
@@ -171,114 +146,71 @@ Output ONLY the final polished Detailed Description. Do not include any conversa
 
 PLOT_STYLIST_AGENT_SYSTEM_PROMPT = """
 ## ROLE
-You are a Lead Visual Designer for top-tier AI conferences (e.g., NeurIPS 2025).
+You are a Lead Technical Book Data Visualization Designer at a premier engineering publisher.
 
 ## TASK
-You are provided with a preliminary description of a statistical plot to be generated. However, this description may lack specific aesthetic details, such as color palettes, and background styling and font choices.
-
-Your task is to refine and enrich this description based on the provided [NeurIPS 2025 Style Guidelines] to ensure the final generated image is a high-quality, publication-ready plot that strictly adheres to the NeurIPS 2025 aesthetic standards.
+Refine the preliminary benchmark plot description to meet technical publishing standards (crisp typography, explicit units, colorblind-safe Okabe-Ito/Viridis-inspired palette, clean white background, high-DPI clarity, zero overlapping labels).
 
 **Crucial Instructions:**
-1.  **Enrich Details:** Focus on specifying visual attributes (colors, fonts, line styles, layout adjustments) defined in the guidelines.
-2.  **Preserve Content:** Do NOT alter the semantic content, logic, or quantitative results of the plot. Your job is purely aesthetic refinement, not content editing.
-3.  **Context Awareness:** Use the provided "Raw Data" and "Visual Intent of the Desired Plot" to understand the emphasis of the plot, ensuring the style supports the content effectively.
-
-## INPUT DATA
--   **Detailed Description**: [The preliminary description of the plot]
--   **Style Guidelines**: [NeurIPS 2025 Style Guidelines]
--   **Raw Data**: [The raw data to be visualized]
--   **Visual Intent of the Desired Plot**: [Visual intent of the desired plot]
+1. **Preserve Quantitative Fidelity:** Do NOT alter any benchmark numbers, units, or series names.
+2. **Enhance Engineering Readability:** Emphasize SLA thresholds, saturation knees, and axis units cleanly.
 
 ## OUTPUT
 Output ONLY the final polished Detailed Description. Do not include any conversational text or explanations.
 """
 
 # --- VISUALIZER ---
-DIAGRAM_VISUALIZER_AGENT_SYSTEM_PROMPT = """You are an expert scientific diagram illustrator. Generate high-quality scientific diagrams based on user requests."""
-PLOT_VISUALIZER_AGENT_SYSTEM_PROMPT = """You are an expert statistical plot illustrator. Write code to generate high-quality statistical plots based on user requests."""
+DIAGRAM_VISUALIZER_AGENT_SYSTEM_PROMPT = """You are an expert technical book systems architect and diagram illustrator (O'Reilly / DDIA style). Generate crisp, high-contrast, white-background technical architecture diagrams with legible component labels and numbered data flows."""
+PLOT_VISUALIZER_AGENT_SYSTEM_PROMPT = """You are an expert systems performance engineer and matplotlib specialist. Write clean, bug-free Python matplotlib code to generate publication-grade engineering benchmark plots with exact numerical fidelity."""
 
 # --- CRITIC ---
 DIAGRAM_CRITIC_AGENT_SYSTEM_PROMPT = """
 ## ROLE
-You are a Lead Visual Designer for top-tier AI conferences (e.g., NeurIPS 2025).
+You are a Principal Systems Architect & Technical Book Art Director reviewing a diagram before print.
 
 ## TASK
-Your task is to conduct a sanity check and provide a critique of the target diagram based on its content and presentation. You must ensure its alignment with the provided 'Methodology Section', 'Figure Caption'.
-
-You are also provided with the 'Detailed Description' corresponding to the current diagram. If you identify areas for improvement in the diagram, you must list your specific critique and provide a revised version of the 'Detailed Description' that incorporates these corrections.
+Conduct a strict technical and visual QA check of the generated architecture diagram against the source technical notes and figure caption.
 
 ## CRITIQUE & REVISION RULES
-
-1. Content
-    -   **Fidelity & Alignment:** Ensure the diagram accurately reflects the method described in the "Methodology Section" and aligns with the "Figure Caption." Reasonable simplifications are allowed, but no critical components should be omitted or misrepresented. Also, the diagram should not contain any hallucinated content. Consistent with the provided methodology section & figure caption is always the most important thing.
-    -   **Text QA:** Check for typographical errors, nonsensical text, or unclear labels within the diagram. Suggest specific corrections.
-    -   **Validation of Examples:** Verify the accuracy of illustrative examples. If the diagram includes specific examples to aid understanding (e.g., molecular formulas, attention maps, mathematical expressions), ensure they are factually correct and logically consistent. If an example is incorrect, provide the correct version.
-    -   **Caption Exclusion:** Ensure the figure caption text (e.g., "Figure 1: Overview...") is **not** included within the image visual itself. The caption should remain separate.
-
-2. Presentation
-    -   **Clarity & Readability:** Evaluate the overall visual clarity. If the flow is confusing or the layout is cluttered, suggest structural improvements.
-    -   **Legend Management:** Be aware that the description&diagram may include a text-based legend explaining color coding. Since this is typically redundant, please excise such descriptions if found.
-
-** IMPORTANT: **
-Your Description should primarily be modifications based on the original description, rather than rewriting from scratch. If the original description has obvious problems in certain parts that require re-description, your description should be as detailed as possible. Semantically, clearly describe each element and their connections. Formally, include various details such as background, colors, line thickness, icon styles, etc. Remember: vague or unclear specifications will only make the generated figure worse, not better.
-
-## INPUT DATA
--   **Target Diagram**: [The generated figure]
--   **Detailed Description**: [The detailed description of the figure]
--   **Methodology Section**: [Contextual content from the methodology section]
--   **Figure Caption**: [Target figure caption]
+1. Technical Fidelity & Alignment:
+   - Ensure every component, boundary, and data-flow arrow matches the technical specification. Flag missing queues, wrong arrow directions, or hallucinated components.
+   - **Text QA:** Check for misspelled technical acronyms, truncated labels, or illegible font sizes.
+   - **Caption Exclusion:** Ensure the figure caption text (e.g., "Figure 1: ...") is **NOT** baked into the image itself; LaTeX handles captions.
+2. Presentation:
+   - Ensure clean white background, non-overlapping arrows/labels, and clear visual hierarchy.
 
 ## OUTPUT
-Provide your response strictly in the following JSON format.
-
+Provide your response strictly in the following JSON format:
 ```json
 {
     "critic_suggestions": "Insert your detailed critique and specific suggestions for improvement here. If the diagram is perfect, write 'No changes needed.'",
-    "revised_description": "Insert the fully revised detailed description here, incorporating all your suggestions. If no changes are needed, write 'No changes needed.'",
+    "revised_description": "Insert the fully revised detailed description here, incorporating all your suggestions. If no changes are needed, write 'No changes needed.'"
 }
 ```
 """
 
 PLOT_CRITIC_AGENT_SYSTEM_PROMPT = """
 ## ROLE
-You are a Lead Visual Designer for top-tier AI conferences (e.g., NeurIPS 2025).
+You are a Senior Performance Engineer & Technical Book Art Director reviewing a benchmark plot before publication.
 
 ## TASK
-Your task is to conduct a sanity check and provide a critique of the target plot based on its content and presentation. You must ensure its alignment with the provided 'Raw Data' and 'Visual Intent'.
-
-You are also provided with the 'Detailed Description' corresponding to the current plot. If you identify areas for improvement in the plot, you must list your specific critique and provide a revised version of the 'Detailed Description' that incorporates these corrections.
+Verify quantitative fidelity and visual clarity of the target plot against Raw Data and Visual Intent.
 
 ## CRITIQUE & REVISION RULES
-
-1. Content
-    -   **Data Fidelity & Alignment:** Ensure the plot accurately represents all data points from the "Raw Data" and aligns with the "Visual Intent." All quantitative values must be correct. No data should be hallucinated, omitted, or misrepresented.
-    -   **Text QA:** Check for typographical errors, nonsensical text, or unclear labels within the plot (axis labels, legend entries, annotations). Suggest specific corrections.
-    -   **Validation of Values:** Verify the accuracy of all numerical values, axis scales, and data points. If any values are incorrect or inconsistent with the raw data, provide the correct values.
-    -   **Caption Exclusion:** Ensure the figure caption text (e.g., "Figure 1: Performance comparison...") is **not** included within the image visual itself. The caption should remain separate.
-
-2. Presentation
-    -   **Clarity & Readability:** Evaluate the overall visual clarity. If the plot is confusing, cluttered, or hard to interpret, suggest structural improvements (e.g., better axis labeling, clearer legend, appropriate plot type).
-    -   **Overlap & Layout:** Check for any overlapping elements that reduce readability, such as text labels being obscured by heavy hatching, grid lines, or other chart elements (e.g., pie chart labels inside dark slices). If overlaps exist, suggest adjusting element positions (e.g., moving labels outside the chart, using leader lines, or adjusting transparency).
-    -   **Legend Management:** Be aware that the description&plot may include a text-based legend explaining symbols or colors. Since this is typically redundant in well-designed plots, please excise such descriptions if found.
-
-3. Handling Generation Failures
-    -   **Invalid Plot:** If the target plot is missing or replaced by a system notice (e.g., "[SYSTEM NOTICE]"), it means the previous description generated invalid code.
-    -   **Action:** You must carefully analyze the "Detailed Description" for potential logical errors, complex syntax, or missing data references.
-    -   **Revision:** Provide a simplified and robust version of the description to ensure it can be correctly rendered. Do not just repeat the same description.
-
-## INPUT DATA
--   **Target Plot**: [The generated plot]
--   **Detailed Description**: [The detailed description of the plot]
--   **Raw Data**: [The raw data to be visualized]
--   **Visual Intent**: [Visual intent of the desired plot]
+1. Quantitative Fidelity:
+   - Every data point, bar height, axis unit, and series label must match Raw Data exactly. No fabricated or dropped values.
+   - Ensure no "Figure X:" caption is rendered inside the plot image unless appropriate as a concise chart title.
+2. Presentation:
+   - Check for overlapping text, clipped axis labels, unreadable legends, or missing units.
+3. Invalid Plot Handling:
+   - If the target plot is missing or replaced by `[SYSTEM NOTICE]`, simplify/fix the matplotlib instructions so execution succeeds reliably.
 
 ## OUTPUT
-Provide your response strictly in the following JSON format.
-
+Provide your response strictly in the following JSON format:
 ```json
 {
     "critic_suggestions": "Insert your detailed critique and specific suggestions for improvement here. If the plot is perfect, write 'No changes needed.'",
-    "revised_description": "Insert the fully revised detailed description here, incorporating all your suggestions. If no changes are needed, write 'No changes needed.'",
+    "revised_description": "Insert the fully revised detailed description here, incorporating all your suggestions. If no changes are needed, write 'No changes needed.'"
 }
 ```
 """
@@ -289,13 +221,40 @@ Provide your response strictly in the following JSON format.
 # ==========================================
 
 
+def _minimal_png_base64(width: int = 120, height: int = 80) -> str:
+    """Generates a minimal valid white PNG image encoded as base64 without external libs."""
+    raw_row = b"\x00" + (b"\xff\xff\xff" * width)
+    compressed = zlib.compress(raw_row * height)
+
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", compressed)
+        + _chunk(b"IEND", b"")
+    )
+    return base64.b64encode(png_bytes).decode("utf-8")
+
+
 def execute_plot_code_worker(code_text: str) -> str:
     """
     Independent plot code execution worker:
     1. Extract code
     2. Execute plotting
-    3. Return JPEG as Base64 string
+    3. Return JPEG (or fallback PNG) as Base64 string
     """
+    if plt is None:
+        print("Warning: matplotlib is not installed; returning minimal placeholder image.")
+        return _minimal_png_base64()
+
     match = re.search(r"```python(.*?)```", code_text, re.DOTALL)
     code_clean = match.group(1).strip() if match else code_text.strip()
 
@@ -386,8 +345,11 @@ def retrieve_few_shot_examples(
 
     raw_response = response_dict["parsed_response"].strip()
     try:
-        parsed = json_repair.loads(raw_response)
-        retrieved_ids = parsed.get(output_key, [])
+        if json_repair is not None:
+            parsed = json_repair.loads(raw_response)
+        else:
+            parsed = parse_gemini_json_results(raw_response) or json.loads(raw_response)
+        retrieved_ids = parsed.get(output_key, []) if isinstance(parsed, dict) else []
     except Exception as e:
         print(f"Warning: Failed to parse retrieval result: {e}")
         retrieved_ids = []
@@ -421,8 +383,8 @@ def generate_figure_caption(
     
     Please provide the final caption for this figure based on the system instructions.
     Requirements:
-    - The caption should be concise and informative, and can be directly used as a caption for academic papers.
-    - The caption MUST NOT contain a "Figure X:" or "Caption X:" prefix, as the latex template will add it automatically.
+    - The caption should be concise, technically informative, and directly usable in a professional IT/engineering book.
+    - The caption MUST NOT contain a "Figure X:" or "Caption X:" prefix, as the LaTeX book class adds numbering automatically.
     - The caption MUST NOT contain any markdown formatting (like bold, italics, etc), it should be plain text.
     
     Respond with the plain text caption only.
@@ -628,7 +590,12 @@ def critique_and_revise_figure(
         .strip()
     )
     try:
-        eval_result = json_repair.loads(cleaned_response)
+        if json_repair is not None:
+            eval_result = json_repair.loads(cleaned_response)
+        else:
+            eval_result = parse_gemini_json_results(cleaned_response) or json.loads(
+                cleaned_response
+            )
         if not isinstance(eval_result, dict):
             eval_result = {}
     except Exception as e:

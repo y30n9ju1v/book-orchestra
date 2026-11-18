@@ -14,34 +14,36 @@
 
 from utils.prompt_utils import UNIVERSAL_NO_LEAKAGE_PROMPT
 
-literature_review_agent_writter_prompt = """Role: Senior AI Researcher.
-Task: Write the introduction and related work section of a paper.
+literature_review_agent_writter_prompt = """Role: Principal Software/Systems Engineer and Technical Book Author (O'Reilly / Manning / Addison-Wesley caliber).
+Task: Write the **Preface** and **Chapter 1: Foundations, Problem Landscape & Ecosystem Architecture** (or the **Introduction** and **Related Work** sections if using a single-article template) in `template.tex`.
 
-You will be given a 'template.tex', this is the initial skeleton we outlined for you. 
-Your job is to fill in two sections: Introduction and Related Work. Leave all the other sections untouched.
+You will be given a `template.tex` skeleton.
+Your job is to fill ONLY the opening front-matter/introductory sections (`Preface` + `Chapter 1` / `Introduction` + `Related Work`). Leave all subsequent chapters/sections (`Chapter 2..N`, `Methodology`, `Implementation`, `Performance`, `Reliability`, `Conclusion`, `Appendix`, bibliography macros) completely untouched.
 
 INPUTS:
-* 'intro_related_work_plan': This is your PRIMARY guide for structure and arguments.
-* 'project_idea' and 'project_experimental_log': Use them to ensure the Intro accurately frames the technical contribution and results.
-* 'citation_checklist': This includes the citation keys that you should use when citing relevant papers.
-* 'collected_papers': These are all the relevant papers we collect for you for citation purpose.
+* `book_metadata` & `intro_related_work_plan`: Your PRIMARY guide for audience level, pedagogical hook, engineering problem gap, and architectural ecosystem clusters.
+* `project_idea` (`book_proposal.md`) and `project_experimental_log` (`technical_notes.md`): Ground every quantitative claim, production scenario, and book scope in these materials.
+* `citation_checklist`: The exact citation keys you may reference via `\\cite{{key}}`.
+* `collected_papers`: Authoritative papers, technical reports, RFCs, and industry references retrieved for you.
 
-YOU MUST ONLY CITE THE GIVEN 'collected_papers', DO NOT cite new papers other than the given papers.
+YOU MUST ONLY CITE KEYS PRESENT IN `citation_checklist` / `collected_papers`. DO NOT invent or hallucinate new citation keys.
 
-CITATION REQUIREMENTS:
-- You have access to the abstract of {paper_count} collected papers.
-- You MUST cite at least {min_cite_paper_count} of them across the introduction and related work sections.
-- Introduction: Cite key statistics, foundational models (CLIP, etc.), and broad problem statements.
-- Related Work: Do deep comparative citations. Group distinct works (e.g., "Several methods [A, B, C]...").
-- Ensure every \\cite{{key}} corresponds exactly to a key in 'citation_checklist'.
-- CRITICAL TIMELINE RULE: Do not treat any papers published after {cutoff_date} as prior baselines to beat. Treat them strictly as concurrent work.
-- CRITICAL EVALUATION RULE: Do not claim our method beats or achieves State-of-the-Art over a specific cited paper UNLESS that paper is explicitly evaluated against in 'project_experimental_log'. Frame other recent papers strictly as concurrent, orthogonal, or conceptual work.
-- You need to return the full code for the new 'template.tex', where the two empty sections (Introduction and Related Work) are now fille in, 
-  while all the other code (packages, styles, and other sections) are identical to the original 'template.tex'.
+WRITING & CITATION STANDARDS:
+- You have access to {paper_count} verified technical references.
+- Aim to weave at least {min_cite_paper_count} relevant references naturally into the Preface/Introduction and Chapter 1/Ecosystem Survey where they genuinely illuminate architectural lineage, empirical trade-offs, or industry standards.
+- **Preface (if present in `template.tex`):**
+  * Clearly define *Who This Book Is For*, *Prerequisites*, *How to Read This Book*, and the *Running Production Case Study*.
+- **Chapter 1 / Foundations & Ecosystem Survey (or Introduction + Related Work):**
+  * Open with a crisp `objectivesbox` (if supported by the template) and a realistic production engineering hook explaining why naive approaches break at scale.
+  * Synthesize competing paradigms and prior systems thematically—compare latency, throughput, memory footprint, failure modes, and operational complexity using a `booktabs` comparison table where helpful rather than listing summaries one-by-one.
+  * CRITICAL TIMELINE RULE: Treat any reference published after {cutoff_date} strictly as concurrent/emerging work, not a legacy baseline.
+  * CRITICAL GROUNDING RULE: Do not claim our book's reference system outperforms a cited work unless backed by `project_experimental_log` (`technical_notes.md`).
+  * Ensure every `\\cite{{key}}` matches `citation_checklist` verbatim.
 
-IMPORTANT NOTE:
-- DO NOT change '\\usepackage[capitalize]{{cleveref}}' into '\\usepackage[capitalize]{{cleverref}}', as there's no 'cleverref.sty'.
+IMPORTANT LATEX NOTE:
+- Return the FULL `template.tex` with the opening sections populated and all packages, macros, callout environments, and downstream chapters preserved verbatim.
+- DO NOT change `\\usepackage[capitalize]{{cleveref}}` into `\\usepackage[capitalize]{{cleverref}}`, as there is no `cleverref.sty`.
 
-OUTPUT Format:
-You must return the code for the updated 'template.tex', Make sure to wrap the code with ```latex content```.
+OUTPUT FORMAT:
+Return the full updated `template.tex` wrapped strictly inside ```latex ... ```.
 """ + "\n" + UNIVERSAL_NO_LEAKAGE_PROMPT

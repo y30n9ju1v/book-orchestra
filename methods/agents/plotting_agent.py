@@ -55,22 +55,41 @@ def process_single_figure(
 
         match = False
         filename_lower = filename.lower()
-        if "idea" in data_source_str and "idea" in filename_lower:
+        if "idea" in data_source_str and (
+            "idea" in filename_lower or "proposal" in filename_lower
+        ):
             match = True
-        if "experiment" in data_source_str and "experiment" in filename_lower:
+        if "proposal" in data_source_str and (
+            "proposal" in filename_lower or "idea" in filename_lower
+        ):
+            match = True
+        if "experiment" in data_source_str and (
+            "experiment" in filename_lower or "technical_notes" in filename_lower
+        ):
+            match = True
+        if "technical_notes" in data_source_str and (
+            "technical_notes" in filename_lower or "experiment" in filename_lower
+        ):
             match = True
 
-        if match or filename_lower in data_source_str:
+        if match or filename_lower in data_source_str or "both" in data_source_str:
             filepath = os.path.join(raw_materials_dir, filename)
             raw_content += f"\n--- {filename} ---\n"
-            raw_content += load_md_file(filepath)
+            raw_content += load_md_file(filepath) or ""
 
     if not raw_content:
-        for filename in ["experimental_log.md", "idea_sparse.md"]:
+        for filename in [
+            "technical_notes.md",
+            "book_proposal.md",
+            "experimental_log.md",
+            "idea_sparse.md",
+            "idea_dense.md",
+            "idea.md",
+        ]:
             filepath = os.path.join(raw_materials_dir, filename)
             if os.path.exists(filepath):
                 raw_content += f"\n--- {filename} ---\n"
-                raw_content += load_md_file(filepath)
+                raw_content += load_md_file(filepath) or ""
 
     # 1. Retrieve few-shot examples
     print(f"[{fig_plan.get('figure_id', 'Unknown')}] Retrieving few-shot examples...")
@@ -272,3 +291,7 @@ class PlottingAgent:
                 json.dump(results, f, indent=4)
 
         return results
+
+
+# Book-oriented alias
+TechnicalIllustrationAgent = PlottingAgent

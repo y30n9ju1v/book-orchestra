@@ -16,15 +16,73 @@ import re
 import json
 from typing import Dict, Any
 
-from google import genai
-from google.genai import types  # type: ignore
 import time
 import os
 import mimetypes
 import base64
 import threading
 
-import dotenv
+try:
+    from google import genai
+    from google.genai import types  # type: ignore
+except ImportError:
+    genai = None  # type: ignore
+
+    class _FallbackPart:
+        def __init__(self, text: str = None, data: bytes = None, mime_type: str = None):
+            self.text = text
+            self.data = data
+            self.mime_type = mime_type
+
+        @classmethod
+        def from_text(cls, text: str):
+            return cls(text=text)
+
+        @classmethod
+        def from_bytes(cls, data: bytes, mime_type: str):
+            return cls(data=data, mime_type=mime_type)
+
+    class _FallbackTypes:
+        Part = _FallbackPart
+        Content = Any
+
+        class GoogleSearch:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class Tool:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class GenerateContentConfig:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class ImageConfig:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+    types = _FallbackTypes()  # type: ignore
+
+try:
+    import dotenv
+except ImportError:
+
+    class _DotenvFallback:
+        @staticmethod
+        def load_dotenv(dotenv_path=None):
+            if not dotenv_path or not os.path.exists(dotenv_path):
+                return False
+            with open(dotenv_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            return True
+
+    dotenv = _DotenvFallback()  # type: ignore
 
 dot_file = os.path.join(os.path.dirname(__file__), "../.env")
 dotenv.load_dotenv(dot_file)
@@ -33,13 +91,18 @@ _genai_client = None
 _genai_client_lock = threading.Lock()
 
 
-def get_genai_client() -> genai.Client:
+def get_genai_client():
     """Returns a shared Gemini client, creating it on first use.
 
     The client is created lazily so that Gemini credentials are only required
     when a Gemini model is actually called (e.g. OpenAI-only setups don't need
     them). Vertex AI takes precedence over GEMINI_API_KEY when both are set.
     """
+    if genai is None:
+        raise ImportError(
+            "The 'google-genai' package is required to call Gemini models. "
+            "Install it via `pip install -r requirements.txt`."
+        )
     global _genai_client
     if _genai_client is None:
         with _genai_client_lock:

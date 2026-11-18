@@ -19,8 +19,19 @@ import json
 import time
 import os.path as osp
 from typing import List, Dict, Any
-from joblib import Parallel, delayed  # type: ignore
-from tqdm import tqdm
+
+try:
+    from joblib import Parallel, delayed  # type: ignore
+except ImportError:
+    Parallel = None  # type: ignore
+    delayed = None  # type: ignore
+
+try:
+    from tqdm import tqdm
+except ImportError:
+
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 import concurrent.futures
 from threading import Lock
@@ -30,7 +41,12 @@ from utils.common_utils import create_log_folder
 from utils.content_parsing_utils import extract_paper_title_from_citation
 from utils.llm_backend_utils import call_llm_with_text_prompt
 
-from dotenv import load_dotenv  # type: ignore
+try:
+    from dotenv import load_dotenv  # type: ignore
+except ImportError:
+
+    def load_dotenv(dotenv_path=None):
+        return False
 
 dot_file = os.path.join(os.path.dirname(__file__), "../.env")
 load_dotenv(dot_file)
@@ -101,10 +117,16 @@ class ReferenceF1V1Evaluator:
         ]
 
         # Parallel extraction of titles from citation strings
-        cleaned_titles = Parallel(n_jobs=10, backend="threading")(
-            delayed(extract_paper_title_from_citation)(ref)
-            for ref in tqdm(cleaned_refs, desc="Extracting Titles from Text")
-        )
+        if Parallel is not None and delayed is not None:
+            cleaned_titles = Parallel(n_jobs=10, backend="threading")(
+                delayed(extract_paper_title_from_citation)(ref)
+                for ref in tqdm(cleaned_refs, desc="Extracting Titles from Text")
+            )
+        else:
+            cleaned_titles = [
+                extract_paper_title_from_citation(ref)
+                for ref in tqdm(cleaned_refs, desc="Extracting Titles from Text")
+            ]
 
         return cleaned_refs, cleaned_titles
 

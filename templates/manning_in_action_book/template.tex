@@ -1,0 +1,178 @@
+% Manning "In Action" Project-Driven Engineering Book Template
+% Designed for Hands-On Architecture & Iterative Code Evolution
+
+\documentclass[11pt,oneside]{book}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[paperwidth=7.375in,paperheight=9.25in,top=0.85in,bottom=0.9in,inner=0.85in,outer=0.75in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[colorlinks=true,linkcolor=blue!65!black,citecolor=teal!65!black,urlcolor=blue!65!black]{hyperref}
+\usepackage[capitalize]{cleveref}
+
+\definecolor{manningBlue}{RGB}{15, 76, 129}
+\definecolor{manningTeal}{RGB}{13, 148, 136}
+\definecolor{manningAmber}{RGB}{217, 119, 6}
+\definecolor{manningRed}{RGB}{185, 28, 28}
+\definecolor{manningSlate}{RGB}{71, 85, 105}
+\definecolor{codeBg}{RGB}{248, 250, 252}
+\definecolor{boxBg}{RGB}{239, 246, 255}
+\definecolor{warnBg}{RGB}{254, 242, 242}
+\definecolor{tipBg}{RGB}{240, 253, 250}
+
+\lstset{
+    backgroundcolor=\color{codeBg},
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{manningBlue}\bfseries,
+    commentstyle=\color{manningSlate}\itshape,
+    stringstyle=\color{manningTeal},
+    numberstyle=\tiny\color{manningSlate},
+    numbers=left,
+    stepnumber=1,
+    numbersep=8pt,
+    frame=single,
+    rulecolor=\color{manningSlate!30},
+    breaklines=true,
+    breakatwhitespace=false,
+    showstringspaces=false,
+    tabsize=4,
+    captionpos=b
+}
+
+\newenvironment{objectivesbox}[1][This Chapter Covers]{%
+    \par\vspace{0.75\baselineskip}%
+    \noindent\fcolorbox{manningBlue}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{manningBlue}#1}\par\vspace{0.35\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.75\baselineskip}%
+}
+
+\newenvironment{tipbox}[1][Developer Tip]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{manningTeal}{tipBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{manningTeal}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{warningbox}[1][Production Warning]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{manningRed}{warnBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{manningRed}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{pitfallbox}[1][Common Pitfall]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{manningAmber}{warnBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{manningAmber}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{notebox}[1][Under the Hood]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{manningSlate}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{manningSlate}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{architecturebox}[1][Design Decision & Trade-off]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{manningBlue}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{manningBlue}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{exercisesbox}[1][Chapter Summary & Hands-On Lab]{%
+    \par\vspace{0.75\baselineskip}%
+    \noindent\fcolorbox{manningBlue}{codeBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{manningBlue}#1}\par\vspace{0.35\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.75\baselineskip}%
+}
+
+%%%%%%%%% BOOK TITLE AND AUTHOR - PLEASE UPDATE
+\title{\textbf{Production Systems in Action}\\[0.5em]\large Designing, Building, and Operating Resilient Software at Scale}
+\author{Senior Engineering Practice Series}
+\date{\today}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\tableofcontents
+
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+%%%%%%%%% PREFACE / INTRODUCTION %%%%%%%%%
+About this book, who should read it, and how the running project evolves chapter by chapter.
+%%%%%%%%% PREFACE / INTRODUCTION %%%%%%%%%
+
+\mainmatter
+
+\part{First Principles and Mental Model}
+
+\chapter{Meet the System: Problem Statement and Architecture Blueprint}
+\label{ch:foundations}
+%%%%%%%%% FOUNDATIONS AND ECOSYSTEM %%%%%%%%%
+Real-world engineering context, ecosystem comparison, and the running reference architecture.
+%%%%%%%%% FOUNDATIONS AND ECOSYSTEM %%%%%%%%%
+
+\part{Building the Production Core}
+
+\chapter{Building the Core Execution and State Layer}
+\label{ch:core_engine}
+%%%%%%%%% CORE ENGINE %%%%%%%%%
+Incremental code listings, interfaces, and architectural walkthroughs.
+%%%%%%%%% CORE ENGINE %%%%%%%%%
+
+\chapter{Integrating Workflows, Concurrency, and Backpressure}
+\label{ch:workflows}
+%%%%%%%%% WORKFLOWS %%%%%%%%%
+End-to-end working implementation with resilience patterns.
+%%%%%%%%% WORKFLOWS %%%%%%%%%
+
+\part{Operating at Scale}
+
+\chapter{Benchmarking, Profiling, and Capacity Optimization}
+\label{ch:benchmarking}
+%%%%%%%%% BENCHMARKING %%%%%%%%%
+Empirical metrics, bottleneck isolation, and tuning levers.
+%%%%%%%%% BENCHMARKING %%%%%%%%%
+
+\chapter{Production Hardening, Observability, and Incident Case Studies}
+\label{ch:hardening}
+%%%%%%%%% HARDENING %%%%%%%%%
+Monitoring, failure modes, and post-mortem lessons.
+%%%%%%%%% HARDENING %%%%%%%%%
+
+\backmatter
+
+%%%%%%%%% REFERENCES %%%%%%%%%
+\bibliographystyle{plain}
+\bibliography{references}
+%%%%%%%%% REFERENCES %%%%%%%%%
+
+%%%%%%%%% APPENDIX %%%%%%%%%
+% \appendix
+% \chapter{Environment Setup and Reproducible Benchmark Harness}
+%%%%%%%%% APPENDIX %%%%%%%%%
+
+\end{document}

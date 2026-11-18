@@ -1,0 +1,181 @@
+% O'Reilly-Style Technical Engineering Book Template
+% Designed for Senior Software, Platform, Systems, and AI Engineers
+
+\documentclass[11pt,oneside]{book}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[paperwidth=7in,paperheight=9.25in,top=0.85in,bottom=0.9in,inner=0.85in,outer=0.75in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=teal!60!black,urlcolor=blue!60!black]{hyperref}
+\usepackage[capitalize]{cleveref}
+
+% Publisher Brand Palette (Print & Screen Friendly)
+\definecolor{bookNavy}{RGB}{20, 48, 82}
+\definecolor{bookTeal}{RGB}{15, 118, 110}
+\definecolor{bookAmber}{RGB}{180, 83, 9}
+\definecolor{bookRed}{RGB}{153, 27, 27}
+\definecolor{bookSlate}{RGB}{71, 85, 105}
+\definecolor{codeBg}{RGB}{248, 250, 252}
+\definecolor{boxBg}{RGB}{241, 245, 249}
+\definecolor{warnBg}{RGB}{254, 242, 242}
+\definecolor{tipBg}{RGB}{240, 253, 250}
+
+% Production-Grade Code Listing Configuration
+\lstset{
+    backgroundcolor=\color{codeBg},
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{bookNavy}\bfseries,
+    commentstyle=\color{bookSlate}\itshape,
+    stringstyle=\color{bookTeal},
+    numberstyle=\tiny\color{bookSlate},
+    numbers=left,
+    stepnumber=1,
+    numbersep=8pt,
+    frame=single,
+    rulecolor=\color{bookSlate!30},
+    breaklines=true,
+    breakatwhitespace=false,
+    showstringspaces=false,
+    tabsize=4,
+    captionpos=b
+}
+
+% Publisher Pedagogical Callout Environments
+\newenvironment{objectivesbox}[1][Chapter Learning Objectives]{%
+    \par\vspace{0.75\baselineskip}%
+    \noindent\fcolorbox{bookNavy}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{bookNavy}#1}\par\vspace{0.35\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.75\baselineskip}%
+}
+
+\newenvironment{tipbox}[1][Engineering Tip]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{bookTeal}{tipBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{bookTeal}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{warningbox}[1][Production Warning]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{bookRed}{warnBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{bookRed}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{pitfallbox}[1][Production Pitfall]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{bookAmber}{warnBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{bookAmber}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{notebox}[1][Technical Note]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{bookSlate}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{bookSlate}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{architecturebox}[1][Architecture Trade-off]{%
+    \par\vspace{0.6\baselineskip}%
+    \noindent\fcolorbox{bookNavy}{boxBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{bookNavy}#1}\par\vspace{0.25\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.6\baselineskip}%
+}
+
+\newenvironment{exercisesbox}[1][Chapter Summary and Engineering Exercises]{%
+    \par\vspace{0.75\baselineskip}%
+    \noindent\fcolorbox{bookNavy}{codeBg}{%
+    \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+    \textbf{\color{bookNavy}#1}\par\vspace{0.35\baselineskip}\small
+}{%
+    \end{minipage}}\par\vspace{0.75\baselineskip}%
+}
+
+%%%%%%%%% BOOK TITLE AND AUTHOR - PLEASE UPDATE
+\title{\textbf{Engineering Production Systems}\\[0.5em]\large A Senior Engineer's Guide to Architecture, Trade-offs, and Scale}
+\author{Principal Engineering Editorial Team}
+\date{\today}
+
+\begin{document}
+
+\frontmatter
+\maketitle
+\tableofcontents
+
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+%%%%%%%%% PREFACE / INTRODUCTION %%%%%%%%%
+Preface, target audience, prerequisites, and book roadmap here.
+%%%%%%%%% PREFACE / INTRODUCTION %%%%%%%%%
+
+\mainmatter
+
+\part{Foundations and Ecosystem Landscape}
+
+\chapter{Problem Landscape, Core Concepts, and Ecosystem Architecture}
+\label{ch:foundations}
+%%%%%%%%% FOUNDATIONS AND ECOSYSTEM %%%%%%%%%
+Foundational concepts, industry landscape, comparative architecture survey, and running case study setup here.
+%%%%%%%%% FOUNDATIONS AND ECOSYSTEM %%%%%%%%%
+
+\part{Core Architecture and Implementation}
+
+\chapter{System Design, Data Models, and Core Engine}
+\label{ch:core_architecture}
+%%%%%%%%% CORE ARCHITECTURE %%%%%%%%%
+System architecture, core abstractions, capacity math, and trade-offs here.
+%%%%%%%%% CORE ARCHITECTURE %%%%%%%%%
+
+\chapter{Implementation Patterns, APIs, and Production Walkthroughs}
+\label{ch:implementation}
+%%%%%%%%% IMPLEMENTATION %%%%%%%%%
+Production-grade code listings, concurrency/memory patterns, and API walkthroughs here.
+%%%%%%%%% IMPLEMENTATION %%%%%%%%%
+
+\part{Production Engineering, Scaling, and Operations}
+
+\chapter{Performance Benchmarks, Tuning, and Trade-off Analysis}
+\label{ch:performance}
+%%%%%%%%% PERFORMANCE %%%%%%%%%
+Empirical benchmark tables, latency/throughput analysis, and cost optimization here.
+%%%%%%%%% PERFORMANCE %%%%%%%%%
+
+\chapter{Reliability, Observability, Failure Modes, and Hardening}
+\label{ch:reliability}
+%%%%%%%%% RELIABILITY %%%%%%%%%
+Failure domain isolation, circuit breaking, observability, post-mortem lessons, and deployment hardening here.
+%%%%%%%%% RELIABILITY %%%%%%%%%
+
+\backmatter
+
+%%%%%%%%% REFERENCES %%%%%%%%%
+\bibliographystyle{plain}
+\bibliography{references}
+%%%%%%%%% REFERENCES %%%%%%%%%
+
+%%%%%%%%% APPENDIX %%%%%%%%%
+% \appendix
+% \chapter{Reference Configurations and Benchmark Methodology}
+%%%%%%%%% APPENDIX %%%%%%%%%
+
+\end{document}

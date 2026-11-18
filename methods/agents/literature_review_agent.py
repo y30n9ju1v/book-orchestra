@@ -17,15 +17,53 @@ import os
 import re
 import datetime
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Dict
-from pydantic import BaseModel
-from google.genai import types  # type: ignore
+
+try:
+    from pydantic import BaseModel
+except ImportError:
+
+    class BaseModel:
+        def __init__(self, **kwargs):
+            annotations = {}
+            for cls in reversed(self.__class__.__mro__):
+                annotations.update(getattr(cls, "__annotations__", {}))
+            for field_name in annotations:
+                if field_name in kwargs:
+                    setattr(self, field_name, kwargs[field_name])
+                elif hasattr(self.__class__, field_name):
+                    setattr(self, field_name, getattr(self.__class__, field_name))
+                else:
+                    setattr(self, field_name, None)
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+        def model_dump(self) -> Dict:
+            annotations = {}
+            for cls in reversed(self.__class__.__mro__):
+                annotations.update(getattr(cls, "__annotations__", {}))
+            return {k: getattr(self, k, None) for k in annotations}
+
+        @classmethod
+        def model_json_schema(cls) -> Dict:
+            annotations = getattr(cls, "__annotations__", {})
+            return {
+                "title": cls.__name__,
+                "type": "object",
+                "properties": {k: {"type": "string"} for k in annotations},
+            }
+
 
 from methods.prompts.literature_review_agent import (
     literature_review_agent_writter_prompt,
 )
-from utils.gemini_utils import call_gemini_with_contents, parse_gemini_latex_results
+from utils.gemini_utils import (
+    call_gemini_with_contents,
+    parse_gemini_latex_results,
+    types,
+)
 from utils.scholar_utils import s2_title_search
 
 
@@ -33,6 +71,9 @@ class CandidatePaper(BaseModel):
     title: str
     year: int
     reason: str
+    authors: Optional[List[str]] = None
+    venue: Optional[str] = None
+    summary: Optional[str] = None
 
 
 class DiscoveryResult(BaseModel):
@@ -103,10 +144,10 @@ class HybridLiteratureAgent:
             cutoff_date = datetime.datetime.now().strftime("%Y-%m")
 
         self._safe_print(
-            f"🚀 Starting Fast Hybrid Literature Agent (Cutoff: {cutoff_date}, Threads: {self.max_workers})..."
+            f"🚀 Starting Technical Ecosystem & Literature Agent (Cutoff: {cutoff_date}, Threads: {self.max_workers})..."
         )
 
-        with open(outline_path, "r") as f:
+        with open(outline_path, "r", encoding="utf-8") as f:
             outline = json.load(f)
 
         outline_output_path = f"{self.output_dir}/outline_v1.json"
@@ -114,7 +155,7 @@ class HybridLiteratureAgent:
         processed_tasks = set()
 
         # --- PHASE 1: DISCOVERY & RETRIEVAL ---
-        self._safe_print(f"📚 Phase 1: Analyzing Plan & Executing Search Tasks...")
+        self._safe_print(f"📚 Phase 1: Analyzing Blueprint & Executing Reference Search Tasks...")
 
         search_tasks = self._collect_search_tasks(outline)
         self._safe_print(
@@ -126,7 +167,7 @@ class HybridLiteratureAgent:
         )
 
         self._safe_print(
-            f"\n✨ Final Count: {len(unique_papers_registry)} unique enriched papers retrieved."
+            f"\n✨ Final Count: {len(unique_papers_registry)} unique technical references retrieved."
         )
 
         # --- PHASE 2: ASSET GENERATION ---
@@ -134,13 +175,13 @@ class HybridLiteratureAgent:
         bibtex_str = self._generate_bibtex(final_papers_list)
         citation_map = self._generate_citation_map(final_papers_list)
 
-        self._safe_print("🔄 Injecting citations back into Outline...")
+        self._safe_print("🔄 Injecting citations back into Book Blueprint...")
         updated_outline = self._inject_citations_into_outline(
             outline, unique_papers_registry
         )
 
         # --- PHASE 3: WRITING ---
-        self._safe_print("✍️  Phase 3: Writing Introduction & Related Work...")
+        self._safe_print("✍️  Phase 3: Writing Preface & Foundations/Ecosystem Chapter...")
         latex_content = self._synthesize_content(
             updated_outline, final_papers_list, cutoff_date
         )
@@ -154,7 +195,7 @@ class HybridLiteratureAgent:
             outline_output_path,
         )
         self._safe_print(
-            f"✅ Done! Literature Review Outputs saved to {self.output_dir}/"
+            f"✅ Done! Technical Reference & Foundations Outputs saved to {self.output_dir}/"
         )
 
     def _execute_tasks_in_parallel(
@@ -172,10 +213,10 @@ class HybridLiteratureAgent:
         if not active_tasks:
             return
 
-        self._safe_print(f"   🔎 Phase 1a: Google Candidates Discovery (MaxPool=10)...")
+        self._safe_print(f"   🔎 Phase 1a: Reference Candidates Discovery (MaxPool=10)...")
         all_candidates_with_tasks = []
 
-        with ThreadPoolExecutor(max_workers=10) as executor:  # Fast for Google Search!
+        with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_task = {
                 executor.submit(
                     self._process_search_task_google, task, outline, cutoff_date
@@ -193,26 +234,26 @@ class HybridLiteratureAgent:
                             )
                 except Exception as exc:
                     self._safe_print(
-                        f"      ❌ Google Search failed for '{task['focus'][:20]}...': {exc}"
+                        f"      ❌ Reference Search failed for '{task['focus'][:20]}...': {exc}"
                     )
 
         self._safe_print(
-            f"   📊 Phase 1b: Semantic Scholar Enrichment (Rate-limited, sequential)..."
+            f"   📊 Phase 1b: Semantic Scholar & Metadata Enrichment..."
         )
-        import time
 
         for item in all_candidates_with_tasks:
-            # wait 1s per query to avoid SS rate limits!
-            time.sleep(1.0)
+            time.sleep(0.5)
             self._enrich_and_register_paper(
                 item["cand"], item["task"], registry, cutoff_date
             )
 
     def _collect_search_tasks(self, outline: Dict) -> List[Dict]:
         tasks = []
-        plan = outline.get("intro_related_work_plan", {})
+        plan = outline.get("intro_related_work_plan") or outline.get(
+            "reference_research_plan", {}
+        )
 
-        # 1. Introduction Macro-Tasks
+        # 1. Foundations / Introduction Macro-Tasks
         intro_strat = plan.get("introduction_strategy", {})
         for direction in intro_strat.get("search_directions", []):
             tasks.append(
@@ -224,7 +265,7 @@ class HybridLiteratureAgent:
                 }
             )
 
-        # 2. Related Work Micro-Tasks
+        # 2. Ecosystem & Comparative Architecture Micro-Tasks
         rw_strat = plan.get("related_work_strategy", {})
         for sub in rw_strat.get("subsections", []):
             queries = sub.get("limitation_search_queries", [])
@@ -243,10 +284,10 @@ class HybridLiteratureAgent:
                     }
                 )
 
-        # 3. Targeted Tasks (Must-Haves from Section Plan)
-        blueprint = outline.get("section_plan", [])
+        # 3. Targeted Tasks (Must-Haves from Chapter/Section Plan)
+        blueprint = outline.get("section_plan") or outline.get("chapter_plan", [])
         for section in blueprint:
-            section_title = section.get("section_title", "Unknown Section")
+            section_title = section.get("section_title", "Unknown Chapter")
             for subsection in section.get("subsections", []):
                 sub_title = subsection.get("subsection_title", "General")
                 bullets = subsection.get("content_bullets", [])
@@ -258,7 +299,7 @@ class HybridLiteratureAgent:
                         {
                             "section": f"{section_title} - {sub_title}",
                             "focus": hint,
-                            "context": f"Must-have citation for section covering: {context_str}",
+                            "context": f"Must-have reference for section covering: {context_str}",
                             "search_type": "targeted",
                         }
                     )
@@ -268,7 +309,6 @@ class HybridLiteratureAgent:
     def _inject_citations_into_outline(
         self, outline: Dict, registry: Dict[str, PaperData]
     ) -> Dict:
-        # Group keys by section name
         section_to_keys = {}
         for p in registry.values():
             sec = p.found_in_section
@@ -276,29 +316,32 @@ class HybridLiteratureAgent:
                 section_to_keys[sec] = []
             section_to_keys[sec].append(p.citation_key)
 
-        plan = outline.get("intro_related_work_plan", {})
+        plan = outline.get("intro_related_work_plan") or outline.get(
+            "reference_research_plan", {}
+        )
 
-        # Introduction
+        # Introduction / Foundations
         intro_strat = plan.get("introduction_strategy", {})
         intro_keys = section_to_keys.get("Introduction", [])
         intro_strat["citation_candidates"] = list(set(intro_keys))
 
-        # Related Work
+        # Ecosystem & Related Work
         rw_strat = plan.get("related_work_strategy", {})
         for sub in rw_strat.get("subsections", []):
             key = f"Related Work: {sub.get('subsection_title', 'General')}"
             sub["citation_candidates"] = section_to_keys.get(key, [])
 
-        # Other Sections
-        blueprint = outline.get("section_plan", [])
-        for section in blueprint:
-            section_title = section.get("section_title", "Unknown Section")
-            for sub in section.get("subsections", []):
-                sub_title = sub.get("subsection_title", "General")
-                key = f"{section_title} - {sub_title}"
-                sub["citation_candidates"] = section_to_keys.get(key, [])
-                if "citation_hints" in sub:
-                    del sub["citation_hints"]
+        # Remaining Chapters / Sections
+        for plan_key in ("section_plan", "chapter_plan"):
+            blueprint = outline.get(plan_key, [])
+            for section in blueprint:
+                section_title = section.get("section_title", "Unknown Chapter")
+                for sub in section.get("subsections", []):
+                    sub_title = sub.get("subsection_title", "General")
+                    key = f"{section_title} - {sub_title}"
+                    sub["citation_candidates"] = section_to_keys.get(key, [])
+                    if "citation_hints" in sub:
+                        del sub["citation_hints"]
 
         return outline
 
@@ -319,14 +362,32 @@ class HybridLiteratureAgent:
                 if candidates:
                     return candidates
                 retry_count += 1
-            except Exception as e:
+            except Exception:
                 retry_count += 1
         return []
 
     def _enrich_and_register_paper(self, cand, task, registry, cutoff_date):
-        cand_title = getattr(cand, "title", None) or cand.get("title")
-        cand_year = getattr(cand, "year", None) or cand.get("year")
-        cand_reason = getattr(cand, "reason", None) or cand.get("reason", "")
+        cand_title = getattr(cand, "title", None) or (
+            cand.get("title") if isinstance(cand, dict) else None
+        )
+        cand_year = getattr(cand, "year", None) or (
+            cand.get("year") if isinstance(cand, dict) else None
+        )
+        cand_reason = getattr(cand, "reason", None) or (
+            cand.get("reason", "") if isinstance(cand, dict) else ""
+        )
+        cand_authors = getattr(cand, "authors", None) or (
+            cand.get("authors") if isinstance(cand, dict) else None
+        )
+        cand_venue = getattr(cand, "venue", None) or (
+            cand.get("venue") if isinstance(cand, dict) else None
+        )
+        cand_summary = getattr(cand, "summary", None) or (
+            cand.get("summary") if isinstance(cand, dict) else None
+        )
+
+        if not cand_title:
+            return
 
         norm_title = self._normalize_title(cand_title)
 
@@ -359,8 +420,8 @@ class HybridLiteratureAgent:
                     ),
                     title=s2_data["title"],
                     authors=authors_list,
-                    venue=s2_data.get("venue") or "arXiv",
-                    year=s2_data.get("year") or cand_year,
+                    venue=s2_data.get("venue") or "Technical Publication / arXiv",
+                    year=s2_data.get("year") or cand_year or 2024,
                     abstract=abstract_text,
                     citation_count=s2_data.get("citationCount") or 0,
                     found_in_section=task["section"],
@@ -370,16 +431,36 @@ class HybridLiteratureAgent:
                     pages=j_info.get("pages"),
                     publication_date=s2_data.get("publicationDate"),
                 )
+            else:
+                # Fallback for industry technical reports, RFCs, books, or S2 misses
+                year_val = int(cand_year) if cand_year else 2024
+                if not self._is_paper_allowed({"year": year_val}, cutoff_date):
+                    return
+                authors_list = cand_authors if cand_authors else ["Technical Authors"]
+                abstract_text = cand_summary or cand_reason or cand_title
+                full_obj = PaperData(
+                    citation_key=self._generate_key(
+                        authors_list, year_val, cand_title
+                    ),
+                    title=cand_title,
+                    authors=authors_list,
+                    venue=cand_venue or "Technical Report / Systems Literature",
+                    year=year_val,
+                    abstract=abstract_text,
+                    citation_count=0,
+                    found_in_section=task["section"],
+                    reason=cand_reason,
+                )
 
-                final_norm_title = self._normalize_title(full_obj.title)
+            final_norm_title = self._normalize_title(full_obj.title)
 
-                with self.registry_lock:
-                    if final_norm_title not in registry:
-                        registry[final_norm_title] = full_obj
-                        self._safe_print(
-                            f"      -> 📚 Added enriched paper: {full_obj.title}"
-                        )
-        except Exception as e:
+            with self.registry_lock:
+                if final_norm_title not in registry:
+                    registry[final_norm_title] = full_obj
+                    self._safe_print(
+                        f"      -> 📚 Added reference: {full_obj.title}"
+                    )
+        except Exception:
             pass
 
     def _is_paper_allowed(self, s2_data: Dict, cutoff_date_str: str) -> bool:
@@ -398,7 +479,7 @@ class HybridLiteratureAgent:
                 p_y = p_parts[0]
                 p_m = p_parts[1] if len(p_parts) > 1 else None
                 p_d = p_parts[2] if len(p_parts) > 2 else None
-            except:
+            except Exception:
                 pass
 
         if p_y is None and s2_data.get("year"):
@@ -424,38 +505,39 @@ class HybridLiteratureAgent:
         return True
 
     def _discover_candidates(self, task, outline, cutoff_date) -> List[CandidatePaper]:
-        intro_plan = outline.get("intro_related_work_plan", {}).get(
-            "introduction_strategy", {}
-        )
+        intro_plan = (
+            outline.get("intro_related_work_plan")
+            or outline.get("reference_research_plan", {})
+        ).get("introduction_strategy", {})
         core_problem = intro_plan.get("problem_gap_hypothesis", "N/A")
 
         if task.get("search_type") == "targeted":
             prompt = f"""
-            Identify the SPECIFIC academic paper described by this hint: "{task['focus']}".
+            Identify the SPECIFIC foundational paper, systems publication, RFC, or official technical report described by this hint: "{task['focus']}".
             
             CONTEXT: {task['context']}
             CUTOFF DATE: Published BEFORE {cutoff_date}
             
             INSTRUCTIONS:
-            1. Use Google Search to find the EXACT title and year of this paper.
-            2. If the hint refers to a dataset, model architecture, or baseline (e.g., "research paper introducing..."), you MUST find the primary, original paper that introduced it.
-            3. Return EXACTLY 1 candidate paper that matches best.
+            1. Use Google Search to find the EXACT title, authors, venue/publisher, and year of this reference.
+            2. If the hint refers to an open-source system, framework, protocol, or benchmark, find the canonical paper, technical report, or specification introducing it.
+            3. Return EXACTLY 1 candidate reference that matches best.
 
             YOU MUST return the results in json format (```json content```) following this schema:
             {DiscoveryResult.model_json_schema()}
             """
         else:
             prompt = f"""
-            Find 10-15 highly relevant, influential academic papers matching the search task. Do not force results; only return strictly relevant papers.
+            Find 8-12 authoritative systems/engineering papers, technical reports, classic books, or standards matching the search task. Only return strictly relevant references.
             
             SEARCH TASK: {task['focus']}
             CONTEXT FOR TASK: {task['context']}
-            BROADER PROJECT PROBLEM: {core_problem}
+            BROADER ENGINEERING PROBLEM: {core_problem}
             CUTOFF DATE: Published BEFORE {cutoff_date}
             
             INSTRUCTIONS:
-            1. Use Google Search to find REAL papers (ArXiv, CVPR, NeurIPS, ICML, ICLR, etc.).
-            2. Only return papers published in top-tier conferences or journals, or highly-cited works, or the exact state-of-the-art relevant to the task.
+            1. Use Google Search to find REAL systems/engineering references (OSDI, SOSP, NSDI, SIGMOD, VLDB, NeurIPS, ICML, ICLR, RFCs, O'Reilly/Addison-Wesley books, official engineering whitepapers).
+            2. Prioritize foundational, high-impact, and production-relevant works.
 
             YOU MUST return the results in json format (```json content```) following this schema:
             {DiscoveryResult.model_json_schema()}
@@ -480,6 +562,7 @@ class HybridLiteratureAgent:
 
         context_payload = {
             "template.tex": self.context_files.get("template.tex", ""),
+            "book_metadata": outline.get("book_metadata", {}),
             "intro_related_work_plan": outline.get("intro_related_work_plan", {}),
             "project_idea": self.context_files.get("idea.md", ""),
             "project_experimental_log": self.context_files.get(
@@ -491,11 +574,14 @@ class HybridLiteratureAgent:
 
         writer_system_prompt = literature_review_agent_writter_prompt.format(
             paper_count=len(papers),
-            min_cite_paper_count=int(len(papers) * 0.9),
+            min_cite_paper_count=max(1, int(len(papers) * 0.8)) if papers else 0,
             cutoff_date=cutoff_date,
         )
 
-        user_prompt = "Generate the LaTeX for Introduction and Related Work sections."
+        user_prompt = (
+            "Generate the LaTeX for the Preface/Introduction and Foundations/Ecosystem Chapter "
+            "in template.tex while keeping all downstream chapters untouched."
+        )
         response_dict = call_gemini_with_contents(
             model_name=self.model_name,
             contents=[user_prompt, json.dumps(context_payload)],
@@ -512,7 +598,7 @@ class HybridLiteratureAgent:
         else:
             first_author = str(authors_raw[0]).split()[-1]
 
-        clean_author = re.sub(r"[^a-zA-Z]", "", first_author).capitalize()
+        clean_author = re.sub(r"[^a-zA-Z]", "", first_author).capitalize() or "Ref"
         year_str = str(year) if year else "2024"
         clean_title_str = re.sub(r"[^a-zA-Z0-9\s]", "", title.lower())
         words = clean_title_str.split()
@@ -534,7 +620,7 @@ class HybridLiteratureAgent:
             "study",
         }
         meaningful = [w.capitalize() for w in words if w not in stopwords]
-        title_part = "".join(meaningful[:2]) if meaningful else "Paper"
+        title_part = "".join(meaningful[:2]) if meaningful else "Work"
         return f"{clean_author}{year_str}{title_part}"
 
     def _generate_bibtex(self, papers: List[PaperData]) -> str:
@@ -589,15 +675,15 @@ class HybridLiteratureAgent:
         with open(f"{self.output_dir}/references.bib", "w", encoding="utf-8") as f:
             f.write(bibtex)
         with open(f"{self.output_dir}/citation_map.json", "w", encoding="utf-8") as f:
-            json.dump(citation_map, f, indent=4)
+            json.dump(citation_map, f, indent=4, ensure_ascii=False)
         with open(outline_path, "w", encoding="utf-8") as f:
-            json.dump(outline, f, indent=4)
+            json.dump(outline, f, indent=4, ensure_ascii=False)
 
     def _load_context_files(self) -> Dict[str, str]:
         loaded = {}
         for name, path in self.context_paths.items():
             if os.path.exists(path):
-                with open(path, "r") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     loaded[name] = f.read()
             else:
                 loaded[name] = ""
@@ -605,3 +691,7 @@ class HybridLiteratureAgent:
 
     def _normalize_title(self, title):
         return re.sub(r"[^a-z0-9]", "", title.lower())
+
+
+# Book-oriented alias
+TechnicalResearchAgent = HybridLiteratureAgent

@@ -12,14 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-MY_ENV=paper_orchestra
-PAPER_ID="cvpr2025_0b62029e18" # Switch this to the paper id you want to write
-
-PYTHONUNBUFFERED=1 nohup conda run --no-capture-output -n $MY_ENV python paper_writing_cli.py \
---raw_materials_dir datasets/cvpr2025/papers/${PAPER_ID}/raw_materials \
---latex_template_dir templates/cvpr2025 \
---output_dir ./paper_output_${PAPER_ID} \
---use_plotting true \
-> ./paper_writing_${PAPER_ID}.log 2>&1 &
-
-
+# Backward-compatible wrapper calling BookOrchestra CLI
+PYTHONUNBUFFERED=1 python3 paper_writing_cli.py \
+  --raw_materials_dir examples/distributed_llm_systems_book/raw_materials \
+  --latex_template_dir templates/oreilly_style_book \
+  --output_dir ./book_output_example \
+  --use_plotting true

@@ -18,15 +18,25 @@ import shutil
 import traceback
 import json
 import time
-import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 
-from concurrent.futures import ThreadPoolExecutor
+try:
+    import tqdm
+except ImportError:
+
+    class _TqdmFallback:
+        @staticmethod
+        def tqdm(iterable, **kwargs):
+            return iterable
+
+    tqdm = _TqdmFallback()  # type: ignore
+
 from methods.agents.outline_agent import OutlineAgent
 from methods.agents.literature_review_agent import HybridLiteratureAgent
 from methods.agents.section_writing_agent import SectionWritingAgent
 from methods.agents.content_refinement_agent import ContentRefinementAgent
 from methods.agents.plotting_agent import PlottingAgent
+from methods.book_writer_with_plotting import write_single_book
 
 from utils.common_utils import (
     create_log_folder,
@@ -44,225 +54,23 @@ def write_single_paper(
     image_model_name: str = "gemini-3-pro-image-preview",
     research_cutoff: str = "2024-11",
     plotting_max_critic_rounds: int = 3,
+    target_audience: str = "Senior Software & Systems Engineers",
+    book_style: str = "Practical Architecture & Production Engineering",
 ):
-    latex_writeup_dir = osp.join(base_dir, "latex_writeup")
-    pdf_file = osp.join(base_dir, "final_paper.pdf")
-
-    time_log = {}
-    time_log["Start_Time_Absolute"] = time.time()
-
-    if osp.exists(latex_writeup_dir):
-        shutil.rmtree(latex_writeup_dir)
-    if osp.exists(pdf_file):
-        os.remove(pdf_file)
-
-    materials_dir = osp.join(base_dir, "raw_materials")
-
-    figures_dir = osp.join(latex_writeup_dir, "figures")
-    os.makedirs(figures_dir, exist_ok=True)
-
-    max_n_tries = 3
-    cur_try = 0
-    succeed = False
-
-    while (not succeed) and (cur_try < max_n_tries):
-        try:
-            assert osp.exists(
-                materials_dir
-            ), f"Please make sure '{materials_dir}' exists!"
-
-            shutil.copytree(latex_template_dir, latex_writeup_dir, dirs_exist_ok=True)
-
-            guidelines_path = osp.join(latex_writeup_dir, "guidelines.md")
-            latex_template_path = osp.join(latex_writeup_dir, "template.tex")
-
-            idea_file_path = osp.join(materials_dir, idea_filename)
-            experimental_log_file_path = osp.join(
-                materials_dir, experimental_log_filename
-            )
-
-            assert osp.exists(
-                guidelines_path
-            ), f"No guidelines file detected at '{guidelines_path}'!"
-            assert osp.exists(
-                latex_template_path
-            ), f"No template file detected at '{latex_template_path}'!"
-            assert osp.exists(
-                idea_file_path
-            ), f"No idea file detected at '{idea_file_path}'!"
-            assert osp.exists(
-                experimental_log_file_path
-            ), f"No experimental log file detected at '{experimental_log_file_path}'!"
-
-            ###############################################################################################
-            # Step 1: Call outline agent
-            _t0 = time.time()
-            outline_agent = OutlineAgent(
-                model_name=writer_model_name, cutoff_date=research_cutoff
-            )
-            outline_file_path = osp.join(base_dir, "outline.json")
-            outline_agent.run(
-                idea_file=idea_file_path,
-                experimental_log_file=experimental_log_file_path,
-                latex_template_file=latex_template_path,
-                conference_guidelines_file=guidelines_path,
-                output_filepath=outline_file_path,
-            )
-            time_log["OutlineAgent"] = time.time() - _t0
-
-            ###############################################################################################
-            # Step 2: Call HybridLiteratureAgent and PlottingAgent in parallel
-            literature_agent_output_dir = osp.join(base_dir, "literature_agent_output")
-
-            def run_literature_agent():
-                print("[DEBUG] Starting run_literature_agent")
-                literature_agent = HybridLiteratureAgent(
-                    idea_path=idea_file_path,
-                    experimental_log_path=experimental_log_file_path,
-                    latex_template_path=latex_template_path,
-                    conference_guidelines_path=guidelines_path,
-                    output_dir=literature_agent_output_dir,
-                    model_name=writer_model_name,
-                    max_workers=3,
-                )
-                literature_agent.run(
-                    outline_path=outline_file_path,
-                    cutoff_date=research_cutoff,
-                )
-                print("[DEBUG] Finished run_literature_agent")
-                return True
-
-            def run_plotting_agent():
-                print("[DEBUG] Starting run_plotting_agent")
-                plotting_results_path = osp.join(base_dir, "plotting_results.json")
-                plotting_agent = PlottingAgent(
-                    model_name=plotting_model_name,
-                    image_model_name=image_model_name,
-                    max_critic_rounds=plotting_max_critic_rounds,
-                )
-                res = plotting_agent.run(
-                    outline_json_path=outline_file_path,
-                    raw_materials_dir=materials_dir,
-                    output_filepath=plotting_results_path,
-                )
-                print("[DEBUG] Finished run_plotting_agent")
-                return res
-
-            _t1 = time.time()
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_lit = executor.submit(run_literature_agent)
-                future_plot = executor.submit(run_plotting_agent)
-
-                future_lit.result()
-                plot_results = future_plot.result()
-            time_log["Parallel_Lit_and_Plot"] = time.time() - _t1
-
-            figures_info = []
-            for plot_obj in plot_results:
-                if "image_path" in plot_obj:
-                    src_plot = osp.join(base_dir, plot_obj["image_path"])
-                    dst_plot = osp.join(latex_writeup_dir, plot_obj["image_path"])
-                    if osp.exists(src_plot):
-                        os.makedirs(osp.dirname(dst_plot), exist_ok=True)
-                        shutil.copy(src_plot, dst_plot)
-                        clean_name = osp.basename(dst_plot)
-                        figures_info.append(
-                            {"name": clean_name, "caption": plot_obj.get("caption", "")}
-                        )
-
-            with open(osp.join(figures_dir, "info.json"), "w") as f:
-                json.dump(figures_info, f, indent=4)
-
-            # Copy literature agent outputs
-            shutil.copy(
-                osp.join(literature_agent_output_dir, "outline_v1.json"),
-                outline_file_path,
-            )
-            shutil.copy(
-                osp.join(literature_agent_output_dir, "updated_template.tex"),
-                osp.join(latex_writeup_dir, "template.tex"),
-            )
-            shutil.copy(
-                osp.join(literature_agent_output_dir, "references.bib"),
-                osp.join(latex_writeup_dir, "references.bib"),
-            )
-
-            ###############################################################################################
-            # Step 3. Call SectionWritingAgent
-            citation_map_path = osp.join(
-                literature_agent_output_dir, "citation_map.json"
-            )
-            _t2 = time.time()
-            section_writing_agent = SectionWritingAgent(
-                outline_path=outline_file_path,
-                template_path=osp.join(latex_writeup_dir, "template.tex"),
-                idea_path=idea_file_path,
-                experimental_log_path=experimental_log_file_path,
-                citation_map_path=citation_map_path,
-                figures_info_path=osp.join(figures_dir, "info.json"),
-                guidelines_path=guidelines_path,
-                model_name=writer_model_name,
-            )
-            raw_draft_tex_path = osp.join(latex_writeup_dir, "raw_draft_paper.tex")
-            section_writing_agent.run(output_path=raw_draft_tex_path)
-            time_log["SectionWritingAgent"] = time.time() - _t2
-
-            ###############################################################################################
-            # Step 4: Content Reflection
-            content_refinement_workdir = os.path.join(
-                base_dir, "content_refinement_workdir"
-            )
-            if os.path.exists(content_refinement_workdir):
-                shutil.rmtree(content_refinement_workdir)
-            os.makedirs(content_refinement_workdir, exist_ok=True)
-
-            shutil.copytree(
-                latex_writeup_dir,
-                content_refinement_workdir,
-                dirs_exist_ok=True,
-            )
-
-            _t3 = time.time()
-            content_refinement_agent = ContentRefinementAgent(
-                experimental_log_path=experimental_log_file_path,
-                citation_map_path=citation_map_path,
-                guidelines_path=guidelines_path,
-                model_name=reflection_model_name,
-                max_reflections=3,
-                work_dir=content_refinement_workdir,
-            )
-            content_refinment_agent_output_pdf_path = content_refinement_agent.run(
-                texfile_path=raw_draft_tex_path
-            )
-            time_log["ContentRefinementAgent"] = time.time() - _t3
-            time_log["Total_Time_Span"] = time.time() - time_log["Start_Time_Absolute"]
-
-            with open(osp.join(base_dir, "time_breakdown.json"), "w") as f:
-                json.dump(time_log, f, indent=4)
-
-            assert osp.exists(
-                content_refinment_agent_output_pdf_path
-            ), f"Content Refinement Agent failed to produce final PDF at {content_refinment_agent_output_pdf_path}!"
-
-            final_pdf_path = osp.join(base_dir, "final_paper.pdf")
-            print(
-                f" >> Copying final PDF from  {content_refinment_agent_output_pdf_path} to {final_pdf_path}...\n"
-            )
-            shutil.copy(content_refinment_agent_output_pdf_path, final_pdf_path)
-            print(" >> Final PDF saved to:\n", final_pdf_path)
-
-            succeed = True
-            return True
-
-        except Exception:
-            print(f"[Try {cur_try+1}/{max_n_tries}] EXCEPTION in perform_writeup:")
-            print(traceback.format_exc())
-            cur_try += 1
-            if cur_try < max_n_tries:
-                print("Try again now...")
-
-    print(f"Writeup failed after {max_n_tries}! Stop here.")
-    return False
+    return write_single_book(
+        base_dir=base_dir,
+        latex_template_dir=latex_template_dir,
+        idea_filename=idea_filename,
+        experimental_log_filename=experimental_log_filename,
+        writer_model_name=writer_model_name,
+        reflection_model_name=reflection_model_name,
+        plotting_model_name=plotting_model_name,
+        image_model_name=image_model_name,
+        research_cutoff=research_cutoff,
+        plotting_max_critic_rounds=plotting_max_critic_rounds,
+        target_audience=target_audience,
+        book_style=book_style,
+    )
 
 
 def process_paper_task(

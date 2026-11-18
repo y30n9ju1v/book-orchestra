@@ -40,6 +40,11 @@
         "description": "Pedagogical and editorial book style.",
         "default": "Practical Architecture & Production Engineering"
       },
+      "author_voice": {
+        "type": "string",
+        "description": "Binding authorial voice contract; the proposal remains the primary source of truth.",
+        "default": "Derive and preserve the proposal's own voice; use a warm, exploratory, reader-facing engineering narrative with concrete examples and varied pacing."
+      },
       "use_plotting": {
         "type": "boolean",
         "description": "Whether to generate technical architecture diagrams and benchmark plots in parallel.",
@@ -57,7 +62,7 @@
       },
       "strict_latex": {
         "type": "boolean",
-        "description": "Require a real LaTeX compiler (pdflatex/tectonic); fail instead of outputting preview_book.pdf.",
+        "description": "Require a real LaTeX compiler (XeLaTeX/LuaLaTeX/Tectonic/pdfLaTeX); fail instead of outputting preview_book.pdf.",
         "default": false
       },
       "model": {

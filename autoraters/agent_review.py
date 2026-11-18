@@ -53,7 +53,8 @@ REVIEW_BOARD_PERSONAS = [
     (
         "developmental_editor",
         "Persona 2 — Executive Acquisitions & Developmental Editor (O'Reilly / Manning Style): "
-        "Scrutinize reader progression, audience calibration for senior engineers, chapter openings "
+        "Scrutinize fidelity to the proposal's authorial voice, warmth, readability, reader progression, "
+        "audience calibration for senior engineers, chapter openings "
         "(concrete production hooks + learning objectives), mental-model scaffolding, comparative trade-off tables, "
         "callout box utility, and chapter-ending summaries/exercises.",
     ),
@@ -150,6 +151,9 @@ In <JSON>, provide the review in JSON format with the following fields:
 - "Pedagogical_Clarity": A rating from 1 to 4 (disjointed, readable, well-scaffolded, masterclass).
 - "Structural_Coherence": A rating from 1 to 4 (fragmented, acceptable, cohesive, seamless progression).
 - "Editorial_Polish": A rating from 1 to 4 (rough draft, decent, clean, print-ready).
+- "Voice_Fidelity": A rating from 1 to 4 (generic/contradicts proposal, inconsistent, recognizable, distinctive and faithful).
+- "Readability": A rating from 1 to 4 (needlessly dense, uneven, clear, exceptionally effortless without losing rigor).
+- "Warmth": A rating from 1 to 4 (cold/institutional, neutral, engaging, trusted human mentor voice).
 - "Originality": A rating from 1 to 4 (mirrors Technical_Depth / fresh synthesis).
 - "Quality": A rating from 1 to 4 (mirrors Code_and_Architecture_Quality).
 - "Clarity": A rating from 1 to 4 (mirrors Pedagogical_Clarity).
@@ -241,6 +245,9 @@ Here is the technical book manuscript you are asked to review:
             ("Pedagogical_Clarity", (1, 4)),
             ("Structural_Coherence", (1, 4)),
             ("Editorial_Polish", (1, 4)),
+            ("Voice_Fidelity", (1, 4)),
+            ("Readability", (1, 4)),
+            ("Warmth", (1, 4)),
             ("Originality", (1, 4)),
             ("Quality", (1, 4)),
             ("Clarity", (1, 4)),

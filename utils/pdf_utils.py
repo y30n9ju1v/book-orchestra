@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import base64
+import html
 import os
 import re
 import json
@@ -48,17 +49,31 @@ FORBIDDEN_LATEX_COMMANDS: list[tuple[str, str]] = [
 
 
 def detect_latex_engine() -> str | None:
-    """Returns 'pdflatex', 'tectonic', or None if no LaTeX engine is installed."""
-    if shutil.which("pdflatex"):
-        return "pdflatex"
+    """Return the best available Unicode-capable TeX engine.
+
+    XeLaTeX and LuaLaTeX are preferred because generated books may contain Korean
+    or other Unicode scripts. Tectonic is XeTeX based. pdfLaTeX remains supported
+    for legacy Latin-only templates.
+    """
+    if shutil.which("xelatex"):
+        return "xelatex"
+    if shutil.which("lualatex"):
+        return "lualatex"
     if shutil.which("tectonic"):
         return "tectonic"
+    if shutil.which("pdflatex"):
+        return "pdflatex"
     return None
 
 
 def get_last_compile_mode() -> str:
-    """Returns the render mode from the most recent compile_latex call ('pdflatex'|'tectonic'|'preview'|'failed')."""
+    """Return the most recent TeX engine, ``preview``, ``failed``, or ``unknown``."""
     return getattr(_LAST_COMPILE_STATE, "render_mode", "unknown")
+
+
+def get_last_preview_backend() -> str | None:
+    """Return the preview backend used by the most recent ``compile_latex`` call, or ``None``."""
+    return getattr(_LAST_COMPILE_STATE, "preview_backend", None)
 
 try:
     import rich
@@ -205,7 +220,7 @@ def latex_to_markdown(latex_text: str) -> str:
     body = body.replace(r"\frontmatter", "").replace(r"\mainmatter", "").replace(r"\backmatter", "")
     body = body.replace(r"\clearpage", "\n").replace(r"\newpage", "\n").replace(r"\appendix", "\n# Appendix\n")
 
-    # Preserve code listings before inline regexes
+    # Preserve code listings and verbatim blocks before inline regexes
     code_blocks = []
 
     def _replace_lstlisting(match):
@@ -222,6 +237,19 @@ def latex_to_markdown(latex_text: str) -> str:
     body = re.sub(
         r"\\begin\{lstlisting\}(?:\[(.*?)\])?(.*?)\\end\{lstlisting\}",
         _replace_lstlisting,
+        body,
+        flags=re.DOTALL,
+    )
+
+    def _replace_verbatim(match):
+        code = match.group(1).strip("\n")
+        placeholder = f"__CODE_BLOCK_{len(code_blocks)}__"
+        code_blocks.append(f"```\n{code}\n```")
+        return f"\n{placeholder}\n"
+
+    body = re.sub(
+        r"\\begin\{verbatim\}(.*?)\\end\{verbatim\}",
+        _replace_verbatim,
         body,
         flags=re.DOTALL,
     )
@@ -281,6 +309,13 @@ def latex_to_markdown(latex_text: str) -> str:
         flags=re.DOTALL,
     )
 
+    # Description lists need their labels preserved before generic list cleanup.
+    body = re.sub(
+        r"\\item\s*\[([^\]]+)\]\s*",
+        lambda m: f"\n- **{m.group(1).strip()}**: ",
+        body,
+    )
+
     # Lists
     body = re.sub(r"\\begin\{(?:itemize|enumerate)\}(?:\[.*?\])?", "", body)
     body = re.sub(r"\\end\{(?:itemize|enumerate)\}", "", body)
@@ -308,6 +343,13 @@ def latex_to_markdown(latex_text: str) -> str:
     body = re.sub(r"\\bibliographystyle\{.*?\}", "", body)
     body = re.sub(r"\\bibliography\{.*?\}", "\n## References\n*(See references.bib)*\n", body)
 
+    # Common layout-only commands and environments must never leak into previews.
+    body = re.sub(r"\\addcontentsline\{[^}]+\}\{[^}]+\}\{([^{}]*)\}", r"\n**\1**\n", body)
+    body = re.sub(r"\\(?:phantomsection|noindent|smallskip|medskip|bigskip)\b", "", body)
+    body = re.sub(r"\\(?:vspace|hspace)\*?\{[^}]*\}", "", body)
+    body = re.sub(r"\\(?:begin|end)\{(?:description|flushright|flushleft|quote)\}", "", body)
+    body = re.sub(r"\\(?:centering|raggedright|raggedleft)\b", "", body)
+
     # Restore code blocks
     for idx, block in enumerate(code_blocks):
         body = body.replace(f"__CODE_BLOCK_{idx}__", block)
@@ -325,6 +367,339 @@ def latex_to_markdown(latex_text: str) -> str:
     result = "\n".join(header_lines) + "\n" + body
     result = re.sub(r"\n{3,}", "\n\n", result).strip() + "\n"
     return result
+
+
+_PREVIEW_BOX_LABELS = {
+    "objectivesbox": "Chapter Learning Objectives",
+    "tipbox": "Engineering Tip",
+    "warningbox": "Production Warning",
+    "notebox": "Technical Note",
+    "architecturebox": "Architecture Trade-off",
+    "pitfallbox": "Production Pitfall",
+    "exercisesbox": "Summary & Exercises",
+}
+
+
+def _extract_braced_command(text: str, command: str) -> str:
+    """Extract a possibly nested ``\\command{...}`` argument."""
+    match = re.search(rf"\\{re.escape(command)}\s*\{{", text)
+    if not match:
+        return ""
+    start = match.end()
+    depth = 1
+    index = start
+    while index < len(text) and depth:
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+        index += 1
+    return text[start : index - 1].strip() if depth == 0 else ""
+
+
+def _prepare_latex_body_for_pandoc(latex_text: str) -> tuple[str, str, str]:
+    """Make custom BookOrchestra LaTeX environments consumable by Pandoc."""
+    begin_doc = latex_text.find(r"\begin{document}")
+    end_doc = latex_text.rfind(r"\end{document}")
+    if begin_doc >= 0 and end_doc > begin_doc:
+        body = latex_text[begin_doc + len(r"\begin{document}") : end_doc]
+    else:
+        body = latex_text
+
+    for env_name, default_title in _PREVIEW_BOX_LABELS.items():
+        pattern = rf"\\begin\{{{env_name}\}}(?:\[(.*?)\])?(.*?)\\end\{{{env_name}\}}"
+
+        def _replace_box(match, title=default_title):
+            box_title = (match.group(1) or title).strip()
+            return (
+                "\\begin{quote}\n"
+                f"\\textbf{{{box_title}}}\\par\n"
+                f"{match.group(2).strip()}\n"
+                "\\end{quote}"
+            )
+
+        body = re.sub(pattern, _replace_box, body, flags=re.DOTALL)
+
+    body = re.sub(
+        r"\\addcontentsline\{[^}]+\}\{[^}]+\}\{([^{}]*)\}",
+        r"\\paragraph{\1}",
+        body,
+    )
+    body = body.replace(r"\phantomsection", "")
+    body = body.replace(r"\tableofcontents", "")
+    title = _extract_braced_command(latex_text, "title")
+    author = _extract_braced_command(latex_text, "author")
+    return body, title, author
+
+
+def _latex_to_html_with_pandoc(latex_text: str, cwd: str) -> str | None:
+    """Convert LaTeX to semantic HTML with Pandoc when it is installed."""
+    pandoc = shutil.which("pandoc")
+    if not pandoc:
+        return None
+    body, title, author = _prepare_latex_body_for_pandoc(latex_text)
+    command = [
+        pandoc,
+        "-f",
+        "latex",
+        "-t",
+        "html5",
+        "--wrap=none",
+        f"--resource-path={os.path.abspath(cwd)}",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            input=body,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=cwd,
+        )
+    except Exception as exc:
+        print(f"Pandoc preview conversion failed: {exc}")
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        print(f"Pandoc preview conversion failed: {(result.stderr or '').strip()}")
+        return None
+
+    converted_html = re.sub(
+        r'<span class="citation" data-cites="([^"]+)">.*?</span>',
+        lambda match: (
+            "<span class='citation'>["
+            + "; ".join(html.escape(key) for key in match.group(1).split())
+            + "]</span>"
+        ),
+        result.stdout,
+        flags=re.DOTALL,
+    )
+
+    def _table_to_preview_cards(match):
+        table_html = match.group(0)
+        caption_match = re.search(r"<caption>(.*?)</caption>", table_html, flags=re.DOTALL)
+        header_match = re.search(r"<thead>(.*?)</thead>", table_html, flags=re.DOTALL)
+        headers = (
+            re.findall(r"<th\b[^>]*>(.*?)</th>", header_match.group(1), flags=re.DOTALL)
+            if header_match
+            else []
+        )
+        body_match = re.search(r"<tbody>(.*?)</tbody>", table_html, flags=re.DOTALL)
+        rows_html = body_match.group(1) if body_match else table_html
+        rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", rows_html, flags=re.DOTALL)
+        records = []
+        for row in rows:
+            cells = re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row, flags=re.DOTALL)
+            fields = []
+            for index, cell in enumerate(cells):
+                label = headers[index] if index < len(headers) else f"Column {index + 1}"
+                label = re.sub(r"<[^>]+>", "", label).strip()
+                cell = re.sub(r"</?p\b[^>]*>", "", cell).strip()
+                fields.append(
+                    f"<div class='table-field'><strong>{label}:</strong> {cell}</div>"
+                )
+            if fields:
+                records.append("<div class='table-record'>" + "".join(fields) + "</div>")
+        caption = caption_match.group(1).strip() if caption_match else "Table"
+        return (
+            "<section class='preview-table'>"
+            f"<p class='table-caption'>{caption}</p>"
+            + "".join(records)
+            + "</section>"
+        )
+
+    converted_html = re.sub(
+        r"<table>.*?</table>", _table_to_preview_cards, converted_html, flags=re.DOTALL
+    )
+
+    front_matter = []
+    if title:
+        clean_title = re.sub(r"\\\\(?:\[[^\]]*\])?", " - ", title)
+        clean_title = re.sub(r"\\[A-Za-z]+\{([^{}]*)\}", r"\1", clean_title)
+        clean_title = re.sub(r"\\[A-Za-z]+\b", "", clean_title)
+        clean_title = re.sub(r"\s+", " ", clean_title).strip(" -")
+        front_matter.append(f"<h1 class='book-title'>{html.escape(clean_title)}</h1>")
+    if author:
+        clean_author = re.sub(r"\\\\", ", ", author)
+        clean_author = re.sub(r"\\[A-Za-z]+\s*", "", clean_author)
+        front_matter.append(f"<p class='book-author'>{html.escape(clean_author)}</p>")
+
+    toc_items = []
+    for level, attrs, heading_html in re.findall(
+        r"<h([12])\b([^>]*)>(.*?)</h\1>", converted_html, flags=re.DOTALL
+    ):
+        id_match = re.search(r'\bid="([^"]+)"', attrs)
+        if not id_match:
+            continue
+        heading_text = re.sub(r"<[^>]+>", "", heading_html)
+        heading_text = html.unescape(heading_text).strip()
+        if heading_text:
+            toc_items.append(
+                f"<li class='toc-level-{level}'><a href='#{html.escape(id_match.group(1))}'>"
+                f"{html.escape(heading_text)}</a></li>"
+            )
+    if toc_items:
+        front_matter.append(
+            "<section class='toc'><h2 class='toc-heading'>Contents</h2><ul>"
+            + "".join(toc_items)
+            + "</ul></section>"
+        )
+    return "\n".join(front_matter) + "\n" + converted_html
+
+
+def _markdown_to_html(markdown_text: str) -> str:
+    """Render Markdown with Mistune, falling back to a small safe renderer."""
+    try:
+        import mistune  # type: ignore
+
+        renderer = mistune.create_markdown(
+            escape=True,
+            plugins=["table", "strikethrough", "task_lists", "url"],
+        )
+        return renderer(markdown_text)
+    except Exception:
+        rendered = []
+        in_code = False
+        code_lines: list[str] = []
+        for raw_line in markdown_text.splitlines():
+            line = raw_line.rstrip()
+            if line.startswith("```"):
+                if in_code:
+                    rendered.append(f"<pre><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
+                    code_lines = []
+                in_code = not in_code
+                continue
+            if in_code:
+                code_lines.append(raw_line)
+            elif line.startswith("### "):
+                rendered.append(f"<h3>{html.escape(line[4:])}</h3>")
+            elif line.startswith("## "):
+                rendered.append(f"<h2>{html.escape(line[3:])}</h2>")
+            elif line.startswith("# "):
+                rendered.append(f"<h1>{html.escape(line[2:])}</h1>")
+            elif line.startswith("- "):
+                rendered.append(f"<ul><li>{html.escape(line[2:])}</li></ul>")
+            elif line.startswith("> "):
+                rendered.append(f"<blockquote>{html.escape(line[2:])}</blockquote>")
+            elif line:
+                rendered.append(f"<p>{html.escape(line)}</p>")
+        return "\n".join(rendered)
+
+
+def _find_preview_font() -> str | None:
+    """Return a local Unicode/CJK font suitable for the preview renderer."""
+    candidates = [
+        "/Library/Fonts/NotoSansCJKkr-Regular.otf",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        r"C:\Windows\Fonts\malgun.ttf",
+    ]
+    return next((path for path in candidates if os.path.isfile(path)), None)
+
+
+def _render_html_preview_pdf(html_text: str, pdf_path: str, cwd: str) -> bool:
+    """Typeset semantic HTML into a readable A4 preview with embedded CJK font."""
+    if pymupdf is None or not hasattr(pymupdf, "Story"):
+        return False
+    font_path = _find_preview_font()
+    archive = pymupdf.Archive(os.path.abspath(cwd))
+    font_css = ""
+    if font_path:
+        archive.add(font_path, os.path.basename(font_path))
+        font_css = (
+            "@font-face { font-family: BookPreview; "
+            f"src: url('{os.path.basename(font_path)}'); }}"
+        )
+    css = font_css + r"""
+        body { font-family: BookPreview, sans-serif; font-size: 9.6pt;
+               line-height: 1.58; color: #172033; }
+        .book-title { font-size: 25pt; color: #143052; margin-top: 95pt;
+                      margin-bottom: 22pt; text-align: center; }
+        .book-author { font-size: 11pt; color: #475569; text-align: center;
+                       margin-bottom: 45pt; }
+        .toc { margin: 10pt 0 28pt 0; }
+        .toc-heading { color: #143052; font-size: 16pt; margin: 0 0 8pt 0; }
+        .toc ul { list-style: none; margin-left: 0; }
+        .toc-level-1 { font-weight: bold; margin-top: 5pt; }
+        .toc-level-2 { margin-left: 13pt; }
+        h1 { color: #143052; font-size: 21pt; line-height: 1.2;
+             margin-top: 18pt; padding-top: 3pt; }
+        h2 { color: #0f766e; font-size: 17pt; line-height: 1.25;
+             margin-top: 16pt; padding-top: 3pt; }
+        h3 { color: #143052; font-size: 13pt; margin-top: 17pt; }
+        h4, h5, h6 { color: #334155; font-size: 10.5pt; margin-top: 13pt; }
+        p { margin: 0 0 7pt 0; text-align: justify; }
+        blockquote { margin: 11pt 8pt; padding: 8pt 11pt; background: #f1f5f9;
+                     border-left: 3pt solid #0f766e; color: #273449; }
+        pre { font-family: monospace; font-size: 7.2pt; line-height: 1.28;
+              white-space: pre-wrap; background: #f8fafc; border: 0.5pt solid #cbd5e1;
+              padding: 7pt; margin: 8pt 0; }
+        code { font-family: monospace; font-size: 0.91em; color: #7c2d12; }
+        pre code { color: #172033; }
+        table { width: 100%; border-collapse: collapse; margin: 9pt 0 12pt 0;
+                font-size: 8pt; page-break-inside: avoid; }
+        th { background: #e2e8f0; color: #143052; font-weight: bold; }
+        th, td { border: 0.45pt solid #94a3b8; padding: 4pt; vertical-align: top; }
+        table.wide-table { font-size: 6.2pt; line-height: 1.18; }
+        table.wide-table th, table.wide-table td { padding: 2pt; }
+        .preview-table { margin: 10pt 0 13pt 0; }
+        .table-caption { color: #475569; font-size: 8pt; text-align: center;
+                         margin-bottom: 5pt; }
+        .table-record { border: 0.5pt solid #94a3b8; background: #f8fafc;
+                        margin-bottom: 5pt; padding: 5pt; font-size: 7.5pt;
+                        line-height: 1.3; }
+        .table-field { margin-bottom: 2pt; }
+        caption, figcaption { color: #475569; font-size: 8pt; margin: 4pt 0 9pt 0; }
+        img { max-width: 100%; height: auto; }
+        figure { margin: 12pt 0; text-align: center; }
+        ul, ol { margin: 4pt 0 8pt 18pt; padding: 0; }
+        li { margin-bottom: 3pt; }
+        a { color: #0f5f8f; text-decoration: none; }
+        .citation { color: #64748b; font-size: 0.86em; }
+    """
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(pdf_path)), exist_ok=True)
+        story = pymupdf.Story(html=html_text, user_css=css, archive=archive)
+        writer = pymupdf.DocumentWriter(pdf_path)
+        mediabox = pymupdf.paper_rect("a4")
+        content_rect = mediabox + (52, 50, -52, -55)
+        more = True
+        page_count = 0
+        while more:
+            page_count += 1
+            if page_count > 2000:
+                raise RuntimeError("Preview exceeded the 2,000 page safety limit.")
+            device = writer.begin_page(mediabox)
+            more, _ = story.place(content_rect)
+            story.draw(device, None)
+            writer.end_page()
+        writer.close()
+
+        doc = pymupdf.open(pdf_path)
+        for page_number, page in enumerate(doc, 1):
+            page.insert_text(
+                (mediabox.width / 2 - 8, mediabox.height - 26),
+                str(page_number),
+                fontsize=8,
+                color=(0.35, 0.4, 0.48),
+            )
+        temp_numbered = f"{pdf_path}.numbered.pdf"
+        doc.save(temp_numbered, garbage=3, deflate=True)
+        doc.close()
+        os.replace(temp_numbered, pdf_path)
+        return os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1000
+    except Exception as exc:
+        print(f"PyMuPDF Story preview rendering failed: {exc}")
+        try:
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+        except OSError:
+            pass
+        return False
 
 
 def _escape_pdf_text(line: str) -> str:
@@ -770,13 +1145,14 @@ def compile_latex(
 ) -> bool:
     """
     Validates LaTeX syntax & security primitives, then compiles in an isolated sandbox
-    using `pdflatex -no-shell-escape` or `tectonic`.
+    using XeLaTeX, LuaLaTeX, Tectonic, or pdfLaTeX with shell escape disabled.
     If no TeX engine is installed:
       - In `strict_latex=True` (publish mode): fails and returns False.
       - In preview mode: writes Markdown/HTML preview PDF (to `preview_pdf_file` if provided,
         otherwise `pdf_file` for internal intermediate drafts) and sets render_mode='preview'.
     """
     _LAST_COMPILE_STATE.render_mode = "failed"
+    _LAST_COMPILE_STATE.preview_backend = None
     source_pdf = os.path.join(cwd, f"{texfile_name}.pdf")
     source_tex = os.path.join(cwd, f"{texfile_name}.tex")
     if os.path.exists(source_pdf):
@@ -803,6 +1179,19 @@ def compile_latex(
         return False
 
     engine = detect_latex_engine()
+    contains_cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", tex_content))
+    if engine == "pdflatex" and contains_cjk:
+        if strict_latex:
+            rich.print(
+                "[bold red]❌ Publish Mode Error: pdfLaTeX cannot safely typeset this "
+                "CJK manuscript. Install XeLaTeX, LuaLaTeX, or Tectonic.[/bold red]"
+            )
+            return False
+        rich.print(
+            "[yellow]pdfLaTeX was found but the manuscript contains CJK text; "
+            "using the Unicode preview renderer instead.[/yellow]"
+        )
+        engine = None
     if engine is not None:
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin:/Library/TeX/texbin"),
@@ -818,10 +1207,11 @@ def compile_latex(
             and re.search(r"\\bibliography\{[^}]+\}", tex_content)
         )
 
-        if engine == "pdflatex":
+        if engine in ("pdflatex", "xelatex", "lualatex"):
+            engine_command = engine
             commands = [
                 [
-                    "pdflatex",
+                    engine_command,
                     "-no-shell-escape",
                     "-interaction=nonstopmode",
                     "-halt-on-error",
@@ -833,14 +1223,14 @@ def compile_latex(
             commands.extend(
                 [
                     [
-                        "pdflatex",
+                        engine_command,
                         "-no-shell-escape",
                         "-interaction=nonstopmode",
                         "-halt-on-error",
                         f"{texfile_name}.tex",
                     ],
                     [
-                        "pdflatex",
+                        engine_command,
                         "-no-shell-escape",
                         "-interaction=nonstopmode",
                         "-halt-on-error",
@@ -916,7 +1306,7 @@ def compile_latex(
             )
 
             has_bibtex_error = False
-            if has_citations and engine == "pdflatex":
+            if has_citations and engine in ("pdflatex", "xelatex", "lualatex"):
                 for log in execution_logs:
                     if log.get("cmd", "").startswith("bibtex"):
                         b_out = (log.get("stdout") or "") + "\n" + (log.get("stderr") or "")
@@ -976,60 +1366,37 @@ def compile_latex(
 
     if strict_latex:
         rich.print(
-            "[bold red]❌ Publish Mode Error: Neither 'pdflatex' nor 'tectonic' is installed. "
+            "[bold red]❌ Publish Mode Error: No supported TeX engine is installed "
+            "(XeLaTeX/LuaLaTeX/Tectonic/pdfLaTeX). "
             "Cannot produce a publication-grade typeset PDF.[/bold red]"
         )
         _LAST_COMPILE_STATE.render_mode = "failed"
+        _LAST_COMPILE_STATE.preview_backend = None
         return False
 
     preview_target = preview_pdf_file or pdf_file
     print(
-        f"⚠️ Warning: No TeX engine ('pdflatex'/'tectonic') found on system. "
+        f"⚠️ Warning: No TeX engine (XeLaTeX/LuaLaTeX/Tectonic/pdfLaTeX) found. "
         f"LaTeX syntax validated; rendering non-typeset preview PDF at '{preview_target}'."
     )
 
     # Fallback preview rendering (ONLY when no TeX engine is installed, strict_latex=False,
     # AND validate_latex_syntax passed)
     md_text = latex_to_markdown(tex_content)
-    if pymupdf is not None and hasattr(pymupdf, "Story"):
-        try:
-            html_lines = [
-                "<html><body style='font-family: sans-serif; font-size: 10pt;'>"
-            ]
-            for line in md_text.splitlines():
-                escaped = (
-                    line.replace("&", "&amp;")
-                    .replace("<", "&lt;")
-                    .replace(">", "&gt;")
-                )
-                if line.startswith("# "):
-                    html_lines.append(f"<h1>{escaped[2:]}</h1>")
-                elif line.startswith("## "):
-                    html_lines.append(f"<h2>{escaped[3:]}</h2>")
-                elif line.startswith("### "):
-                    html_lines.append(f"<h3>{escaped[4:]}</h3>")
-                else:
-                    html_lines.append(f"<p>{escaped or '&nbsp;'}</p>")
-            html_lines.append("</body></html>")
-            story = pymupdf.Story(html="\n".join(html_lines))
-            writer = pymupdf.DocumentWriter(preview_target)
-            mediabox = pymupdf.paper_rect("letter")
-            where = mediabox + (54, 54, -54, -54)
-            more = True
-            while more:
-                dev = writer.begin_page(mediabox)
-                more, _ = story.place(where)
-                story.draw(dev, None)
-                writer.end_page()
-            writer.close()
-            _LAST_COMPILE_STATE.render_mode = "preview"
-            return True
-        except Exception as e:
-            print(f"PyMuPDF Story fallback failed, using pure-Python PDF writer: {e}")
+    semantic_html = _latex_to_html_with_pandoc(tex_content, cwd)
+    preview_backend = "pandoc+pymupdf-story"
+    if semantic_html is None:
+        semantic_html = _markdown_to_html(md_text)
+        preview_backend = "markdown+pymupdf-story"
+    if _render_html_preview_pdf(semantic_html, preview_target, cwd):
+        _LAST_COMPILE_STATE.render_mode = "preview"
+        _LAST_COMPILE_STATE.preview_backend = preview_backend
+        return True
 
     render_minimal_pdf(md_text, preview_target)
     if os.path.exists(preview_target):
         _LAST_COMPILE_STATE.render_mode = "preview"
+        _LAST_COMPILE_STATE.preview_backend = "minimal-pdf"
         return True
     return False
 

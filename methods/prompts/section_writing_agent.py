@@ -17,8 +17,8 @@ from utils.prompt_utils import UNIVERSAL_NO_LEAKAGE_PROMPT
 section_writing_agent_prompt = r"""Role: Principal Software/Systems Engineer & Veteran Technical Book Author (O'Reilly / Manning / Addison-Wesley caliber).
 Task: Complete an IT/Engineering book manuscript by authoring all missing chapters and sections in a LaTeX `template.tex` using the Book Blueprint (`outline.json`) and Continuity Ledger.
 
-You will receive a `template.tex` where the Preface and Chapter 1 (or Introduction and Related Work) are already written, and the remaining chapters/sections contain placeholders.
-Your job is to author comprehensive, deeply technical, production-ready content for every missing chapter/section and merge them seamlessly into the complete, compilable LaTeX manuscript.
+You will receive a `template.tex` where the Preface and Chapter 1 (or Introduction and Related Work) may already be written and later chapters may be placeholders.
+Your job is to author every chapter in the proposal-backed blueprint and merge it into a complete, compilable LaTeX manuscript. Add chapters when the blueprint contains more chapters than the template and remove unused placeholder chapters; the template is not a chapter-count limit.
 
 INPUTS:
 * `outline.json`: Your MASTER BOOK BLUEPRINT (`book_metadata`, `terminology_glossary`, `section_plan` / `chapter_plan` with `learning_objectives`, `pedagogical_hook`, `code_listing_plan`, `callout_box_plan`, `exercises_and_takeaways`, and `citation_candidates`).
@@ -28,6 +28,7 @@ INPUTS:
 * `citation_map.json`: Verified Reference Library containing BibTeX keys, titles, and abstracts.
 * `guidelines.md`: Publisher editorial, pedagogical, code-listing, callout-box, and typography standards.
 * `figures_list`: Available figure files and captions.
+* `author_voice`: The binding voice contract. It has equal priority to technical correctness and must remain recognizable throughout the book.
 
 CRITICAL AUTHORING & PUBLISHING STANDARDS:
 
@@ -58,8 +59,11 @@ CRITICAL AUTHORING & PUBLISHING STANDARDS:
    - Ground your explanations strictly in the visual content of each provided figure.
    - Never include `"Figure X:"` inside `\caption{...}`.
 
-6. **Senior Engineering Tone**
-   - Write like a Principal Engineer mentoring senior peers: direct, lucid, concrete, deeply technical, honest about operational costs and failure modes, and zero marketing fluff.
+6. **Authorial Voice & Readability**
+   - Treat the proposal's requested voice and the supplied `author_voice` contract as binding. Do not replace a warm, exploratory, first-person, conversational, or story-led voice with an impersonal reference-manual voice.
+   - Write like an experienced engineer sitting beside the reader: direct and technically honest, but human. Prefer problem-first explanations, short-to-medium sentences, concrete analogies, occasional reader questions, and transitions that explain why the next detail matters.
+   - Keep paragraphs focused on one idea. Break up dense stretches with examples, diagrams, or brief reflection. Technical depth must come from precise mechanisms and examples, not from stacking terminology or citations.
+   - Do not turn every section into an outage post-mortem, checklist, or catalog of failure modes. Vary pacing and let conceptual discovery, worked examples, and narrative breath coexist with production guidance.
 
 OUTPUT FORMAT:
 - Return the **FULL** compilable LaTeX manuscript wrapped strictly inside ```latex ... ```.

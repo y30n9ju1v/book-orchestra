@@ -61,7 +61,7 @@ def _finalize_book_artifacts(
     from utils.pdf_utils import get_last_compile_mode
 
     render_mode = get_last_compile_mode()
-    is_publication_grade = render_mode in ("pdflatex", "tectonic")
+    is_publication_grade = render_mode in ("xelatex", "lualatex", "tectonic", "pdflatex")
     final_book_pdf = osp.join(base_dir, "final_book.pdf")
     preview_book_pdf = osp.join(base_dir, "preview_book.pdf")
 

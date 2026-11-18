@@ -3,8 +3,36 @@
 
 \documentclass[11pt,oneside]{book}
 
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+  \usepackage[T1]{fontenc}
+\else
+  \usepackage{fontspec}
+  \IfFontExistsTF{Noto Sans CJK KR}{
+    \setmainfont{Noto Sans CJK KR}
+    \setsansfont{Noto Sans CJK KR}
+    \IfFontExistsTF{Noto Sans Mono CJK KR}{\setmonofont{Noto Sans Mono CJK KR}}{\setmonofont{Noto Sans CJK KR}}
+  }{
+    \IfFontExistsTF{Apple SD Gothic Neo}{
+      \setmainfont{Apple SD Gothic Neo}
+      \setsansfont{Apple SD Gothic Neo}
+      \setmonofont{Apple SD Gothic Neo}
+    }{
+      \IfFontExistsTF{AppleGothic}{
+        \setmainfont{AppleGothic}
+        \setsansfont{AppleGothic}
+        \setmonofont{AppleGothic}
+      }{
+        \IfFontExistsTF{NanumGothic}{
+          \setmainfont{NanumGothic}
+          \setsansfont{NanumGothic}
+          \setmonofont{NanumGothic}
+        }{}
+      }
+    }
+  }
+\fi
 \usepackage[paperwidth=7in,paperheight=9.25in,top=0.85in,bottom=0.9in,inner=0.85in,outer=0.75in]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}

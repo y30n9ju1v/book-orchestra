@@ -65,6 +65,14 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
         help="Editorial and pedagogical style (e.g., 'Practical Architecture & Production Engineering', 'Project-Based Hands-On', 'Deep Systems Reference').",
     )
     parser.add_argument(
+        "--author_voice",
+        default=(
+            "Derive and preserve the proposal's own voice; use a warm, exploratory, "
+            "reader-facing engineering narrative with concrete examples and varied pacing."
+        ),
+        help="Binding prose voice contract. The proposal remains the primary source of truth.",
+    )
+    parser.add_argument(
         "--writer_model_name",
         default="inherit",
         help="Antigravity model tier for blueprint, research, and chapter writing agents ('inherit', 'pro', 'flash', 'flash_lite').",
@@ -184,6 +192,7 @@ def main(argv=None):
             "technical_notes_filename": args.technical_notes_filename,
             "target_audience": args.target_audience,
             "book_style": args.book_style,
+            "author_voice": args.author_voice,
             "use_plotting": args.use_plotting,
             "max_reflections": args.max_reflections,
             "research_cutoff": args.research_cutoff,

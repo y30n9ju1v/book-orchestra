@@ -46,6 +46,7 @@ Or invoke `run_workflow` with:
     "output_dir": "./book_output_agy",
     "target_audience": "Senior Backend, Platform, and ML Systems Engineers",
     "book_style": "Practical Architecture & Production Engineering",
+    "author_voice": "Warm, exploratory, reader-facing, and rich in concrete examples",
     "use_plotting": true,
     "max_reflections": 2
   }
@@ -65,7 +66,7 @@ python3 book_writing_cli.py \
 ## Generated Outputs
 Inside `output_dir`:
 - `final_book.pdf`: Publication-grade book manuscript PDF compiled via `pdflatex` (`-no-shell-escape`) or `tectonic` inside an isolated TeX sandbox
-- `preview_book.pdf`: Non-typeset preview PDF generated only when no TeX engine is installed and `strict_latex=false`
+- `preview_book.pdf`: Semantic HTML preview with embedded Unicode/CJK font, generated only when no TeX engine is installed and `strict_latex=false`
 - `build_manifest.json`: Build metadata recording `render_mode` (`pdflatex`, `tectonic`, or `preview`) and `is_publication_grade`
 - `final_book.tex`: Complete compilable LaTeX book manuscript (with `references.bib` and `figures/` synced at `output_dir` root)
 - `final_book.md`: Clean Markdown book manuscript for Markdown/Pandoc/EPUB workflows

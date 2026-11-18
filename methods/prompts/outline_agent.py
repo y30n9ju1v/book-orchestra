@@ -22,18 +22,21 @@ You must output a single valid JSON object.
 Your inputs are:
 1.  `book_proposal.md` (or `idea.md`): Book vision, target audience, core engineering thesis, problem domain, and proposed architecture.
 2.  `technical_notes.md` (or `experimental_log.md`): Architecture specifications, capacity math, code implementations, production benchmarks, latency/throughput/cost data, and incident case studies.
-3.  `template.tex`: The target LaTeX book or document skeleton (`\\part{{...}}`, `\\chapter{{...}}`, `\\section{{...}}`). Match its top-level chapter/section structure.
+3.  `template.tex`: The target LaTeX visual/typesetting skeleton. Reuse its document class, environments, and styling, but do not let placeholder chapter count override the proposal's intended table of contents.
 4.  `guidelines.md`: Publisher editorial, pedagogical, code-listing, callout-box, and typography standards.
 
 ### Processing Directives
 
 Global Instruction: Synthesize all provided documents holistically. Design the book for **Senior / Staff Engineers** who expect clear mental models, honest engineering trade-offs, runnable/idiomatic code, and production failure analysis—not fluff.
 
+**Source-of-truth precedence:** the proposal controls the book's promise, authorial voice, part/chapter count, and reader journey. The template controls typography and available LaTeX environments only. If the proposal requests 12 chapters and the template contains 5 placeholders, produce all 12 chapters; never compress the proposal merely to fit placeholder count.
+
 #### Directive 1: Book Metadata & Canonical Terminology (`book_metadata`)
 Define the editorial spine that keeps all chapters aligned:
 * `title` and `subtitle`
 * `target_audience` and `prerequisites`
 * `pedagogical_style` (e.g., "Progressive Systems Architecture + Production Code Walkthroughs")
+* `author_voice`: A concrete voice contract derived from the proposal (narrative person, warmth, sentence rhythm, use of questions/analogies, and maximum acceptable density). Preserve it in every chapter.
 * `core_thesis`: The central engineering argument uniting the book.
 * `running_case_study`: A concrete end-to-end production system/scenario threaded across chapters.
 * `terminology_glossary`: Canonical technical terms and definitions so every chapter uses identical naming.
@@ -56,10 +59,10 @@ Provide search instructions for the downstream Technical Research Agent to gathe
     * For each paradigm cluster, provide: `subsection_title`, `methodology_cluster`, `sota_investigation_mission` (cutoff `{cutoff_date}`), `limitation_hypothesis` (operational/scaling bottlenecks), `limitation_search_queries`, and `bridge_to_our_method` (how the book's patterns address those trade-offs).
 
 #### Directive 4: Chapter-by-Chapter Blueprint (`section_plan`)
-Outline every remaining chapter/section from `template.tex` (e.g., Chapter 2..N, Appendix) into a publisher-grade pedagogical blueprint:
-* **Strict Hierarchy**: Match the chapter/section names from `template.tex`. If Subsection X.1 is created, X.2 is mandatory (no orphaned subsections).
+Outline every chapter promised by `book_proposal.md` into a publisher-grade pedagogical blueprint. Use template headings only as examples when they agree with the proposal:
+* **Strict Hierarchy**: Preserve the proposal's part/chapter sequence and chapter count. If Subsection X.1 is created, X.2 is mandatory (no orphaned subsections).
 * **Pedagogical Scaffolding per Chapter/Section**:
-    * `section_title`: Exact chapter or section heading from `template.tex`.
+    * `section_title`: Exact chapter or section heading from `book_proposal.md` (use `template.tex` headings only when the proposal does not specify its own chapter titles).
     * `part_title`: Logical Book Part (if applicable).
     * `learning_objectives`: 3-5 concrete engineering skills/mental models gained in this chapter.
     * `pedagogical_hook`: Real-world production scenario or failure story opening the chapter.

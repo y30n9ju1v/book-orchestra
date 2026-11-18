@@ -5,3 +5,4 @@ __pycache__/
 *.log
 book_output*
 *.zip
+.DS_Store

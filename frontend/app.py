@@ -181,6 +181,27 @@ def render_sidebar():
         "Pedagogical Style", styles, disabled=st.session_state.locked
     )
 
+    voice_profiles = {
+        "Warm exploratory mentor": (
+            "Preserve the proposal's voice. Write as a warm, exploratory engineering mentor: "
+            "reader-facing, concrete, conversational, and technically precise, with varied pacing."
+        ),
+        "Concise hands-on guide": (
+            "Use concise, approachable workshop prose with short explanations, worked examples, "
+            "and minimal jargon while preserving technical rigor."
+        ),
+        "Deep reference, still readable": (
+            "Use an authoritative reference voice, but keep paragraphs focused, transitions natural, "
+            "and examples frequent; avoid cold or needlessly dense prose."
+        ),
+    }
+    selected_voice_name = st.sidebar.selectbox(
+        "Author Voice",
+        list(voice_profiles),
+        disabled=st.session_state.locked,
+    )
+    selected_author_voice = voice_profiles[selected_voice_name]
+
     plotting_options = ["Yes", "No"]
     enable_plotting = st.sidebar.selectbox(
         "Generate Architecture Diagrams & Benchmark Plots",
@@ -190,7 +211,7 @@ def render_sidebar():
     )
 
     strict_latex_mode = st.sidebar.checkbox(
-        "Strict LaTeX Publish Mode (require pdflatex/tectonic)",
+        "Strict LaTeX Publish Mode (require a TeX engine)",
         value=False,
         disabled=st.session_state.locked,
     )
@@ -219,6 +240,7 @@ def render_sidebar():
         selected_template,
         selected_audience,
         selected_style,
+        selected_author_voice,
         enable_plotting,
         email_input,
     )
@@ -229,6 +251,7 @@ def render_sidebar():
     selected_template,
     selected_audience,
     selected_style,
+    selected_author_voice,
     enable_plotting,
     email_input,
 ) = render_sidebar()
@@ -354,6 +377,7 @@ def handle_live_execution(
     selected_model,
     selected_audience,
     selected_style,
+    selected_author_voice,
     enable_plotting,
 ):
     if st.session_state.running:
@@ -404,6 +428,8 @@ def handle_live_execution(
                 selected_audience,
                 "--book_style",
                 selected_style,
+                "--author_voice",
+                selected_author_voice,
             ]
             if enable_plotting == "Yes":
                 command.extend(
@@ -1121,5 +1147,6 @@ else:
         selected_model,
         selected_audience,
         selected_style,
+        selected_author_voice,
         enable_plotting,
     )

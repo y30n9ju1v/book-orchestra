@@ -19,7 +19,8 @@ import shutil
 
 from utils.pdf_utils import (
     compile_latex,
-    load_book,
+    get_last_compile_mode,
+    latex_to_markdown,
     pdf_to_grid_images,
     inspect_book_layout_issues,
 )
@@ -79,6 +80,7 @@ class ContentRefinementAgent:
         self.current_tex = ""
         self.initial_score = 0
         self.current_score = 0
+        self.current_render_mode = "unknown"
 
     def _read_file(self, path: str) -> str:
         try:
@@ -88,13 +90,13 @@ class ContentRefinementAgent:
             print(f" >> Warning: File not found at {path}")
             return ""
 
-    def _get_peer_review(self, pdf_path: str, iteration_label: str) -> tuple[dict, float]:
+    def _get_peer_review(self, tex_path: str, iteration_label: str) -> tuple[dict, float]:
         """Helper to invoke the 3-Persona Editorial & Technical Review Board."""
         print(
             f" >> [EditorialReviewBoard] Generating feedback for {iteration_label} manuscript..."
         )
         try:
-            manuscript_text = load_book(pdf_path=pdf_path)
+            manuscript_text = latex_to_markdown(self._read_file(tex_path))
 
             review = perform_review_agentreview(
                 text=manuscript_text,
@@ -119,6 +121,11 @@ class ContentRefinementAgent:
 
     def _get_formatting_review(self, pdf_path: str, iteration_label: str) -> dict:
         """Helper to call VLM for book typography, code listing, and layout QA."""
+        if self.current_render_mode == "preview":
+            print(
+                " >> [VLM] Preview render detected; using source diagnostics instead of screenshots."
+            )
+            return inspect_book_layout_issues(self.current_tex, cwd=self.work_dir)
         print(
             f" >> [VLM] Generating typesetting & layout QA feedback for {iteration_label} manuscript..."
         )
@@ -200,7 +207,7 @@ Respond in JSON format with the following structure:
             return inspect_book_layout_issues(self.current_tex, cwd=self.work_dir)
 
     def _extract_scores(self, review: dict) -> dict:
-        """Extracts numerical scores using strictly the 6 non-overlapping book-native axes (plus Overall/Confidence)."""
+        """Extract non-overlapping technical, editorial, and voice scores."""
         book_axes = [
             "Technical_Depth",
             "Practical_Utility",
@@ -208,6 +215,9 @@ Respond in JSON format with the following structure:
             "Pedagogical_Clarity",
             "Structural_Coherence",
             "Editorial_Polish",
+            "Voice_Fidelity",
+            "Readability",
+            "Warmth",
             "Overall",
             "Confidence",
         ]
@@ -278,6 +288,7 @@ Respond in JSON format with the following structure:
             f.write(self.current_tex)
 
         compiled_ok = compile_latex(self.work_dir, initial_pdf_path, "initial_draft")
+        self.current_render_mode = get_last_compile_mode()
         if not compiled_ok or not os.path.exists(initial_pdf_path):
             raise RuntimeError(
                 f"Initial LaTeX draft failed syntax validation or compilation at '{initial_pdf_path}'."
@@ -287,11 +298,12 @@ Respond in JSON format with the following structure:
         v0_screenshots_dir = os.path.join(
             self.work_dir, "pdf_screenshots", "content_refinement", "v0"
         )
-        print(f" >> Generating snapshots for V0...")
-        pdf_to_grid_images(initial_pdf_path, v0_screenshots_dir)
+        if self.current_render_mode != "preview":
+            print(" >> Generating snapshots for V0...")
+            pdf_to_grid_images(initial_pdf_path, v0_screenshots_dir)
 
         current_peer_review, self.current_score = self._get_peer_review(
-            initial_pdf_path, "initial"
+            os.path.join(self.work_dir, "initial_draft.tex"), "initial"
         )
         self.initial_score = self.current_score
 
@@ -338,18 +350,19 @@ INSTRUCTION:
 
             valid_pdf_for_context = final_valid_pdf_path
 
-            with open(valid_pdf_for_context, "rb") as f:
-                pdf_bytes = f.read()
+            refinement_contents = [types.Part.from_text(text=user_prompt_text)]
+            if self.current_render_mode != "preview":
+                with open(valid_pdf_for_context, "rb") as f:
+                    pdf_bytes = f.read()
+                refinement_contents.insert(
+                    0,
+                    types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                )
 
             print(" >> Calling Editorial Refinement Agent...")
             try:
                 response_dict = call_agent_with_contents(
-                    contents=[
-                        types.Part.from_bytes(
-                            data=pdf_bytes, mime_type="application/pdf"
-                        ),
-                        types.Part.from_text(text=user_prompt_text),
-                    ],
+                    contents=refinement_contents,
                     generation_configs={"system_instruction": self.system_prompt},
                     model_name=self.model_name,
                     result_parsing_func=parse_agent_json_latex_response,
@@ -378,6 +391,7 @@ INSTRUCTION:
 
                 print(" >> Compiling revised manuscript...")
                 compiled_rev_ok = compile_latex(self.work_dir, cur_pdf_path, cur_filename)
+                candidate_render_mode = get_last_compile_mode()
 
                 if not compiled_rev_ok or not os.path.exists(cur_pdf_path):
                     print(" >> Compilation Failed. Retrying with previous version...")
@@ -388,10 +402,13 @@ INSTRUCTION:
                 screenshots_dir = os.path.join(
                     self.work_dir, "pdf_screenshots", "content_refinement", f"v{i+1}"
                 )
-                print(f" >> Generating snapshots for v{i+1}...")
-                pdf_to_grid_images(cur_pdf_path, screenshots_dir)
+                if candidate_render_mode != "preview":
+                    print(f" >> Generating snapshots for v{i+1}...")
+                    pdf_to_grid_images(cur_pdf_path, screenshots_dir)
 
-                new_review, new_score = self._get_peer_review(cur_pdf_path, f"v{i+1}")
+                new_review, new_score = self._get_peer_review(
+                    os.path.join(self.work_dir, f"{cur_filename}.tex"), f"v{i+1}"
+                )
 
                 # --- COMPARISON LOGIC & METRICS EXTRACTION ---
                 old_metrics = self._extract_scores(current_peer_review)
@@ -444,6 +461,7 @@ INSTRUCTION:
                     self.current_score = new_score
                     current_peer_review = new_review
                     final_valid_pdf_path = cur_pdf_path
+                    self.current_render_mode = candidate_render_mode
 
                     with open(worklog_save_path, "w", encoding="utf-8") as f:
                         json.dump(self.worklogs, f, indent=4, ensure_ascii=False)
@@ -484,6 +502,7 @@ INSTRUCTION:
                         self.current_score = new_score
                         current_peer_review = new_review
                         final_valid_pdf_path = cur_pdf_path
+                        self.current_render_mode = candidate_render_mode
 
                         with open(worklog_save_path, "w", encoding="utf-8") as f:
                             json.dump(self.worklogs, f, indent=4, ensure_ascii=False)
@@ -500,8 +519,9 @@ INSTRUCTION:
         format_v0_screenshots_dir = os.path.join(
             self.work_dir, "pdf_screenshots", "format_refinement", "v0"
         )
-        print(f" >> Generating snapshots for format v0...")
-        pdf_to_grid_images(final_valid_pdf_path, format_v0_screenshots_dir)
+        if self.current_render_mode != "preview":
+            print(" >> Generating snapshots for format v0...")
+            pdf_to_grid_images(final_valid_pdf_path, format_v0_screenshots_dir)
 
         # --- Formatting & Production Typesetting Loop ---
         print(" >> Starting dedicated formatting loop...")

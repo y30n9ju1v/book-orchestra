@@ -82,8 +82,8 @@ from utils.diagram_plot_utils import (
 from utils.pdf_utils import (
     compile_latex,
     get_last_compile_mode,
+    get_last_preview_backend,
     latex_to_markdown,
-    load_book,
     pdf_to_grid_images,
     inspect_book_layout_issues,
 )
@@ -155,6 +155,9 @@ REVIEW_SCHEMA = {
         "Pedagogical_Clarity": {"type": "integer"},
         "Structural_Coherence": {"type": "integer"},
         "Editorial_Polish": {"type": "integer"},
+        "Voice_Fidelity": {"type": "integer"},
+        "Readability": {"type": "integer"},
+        "Warmth": {"type": "integer"},
         "Questions": {"type": "array", "items": {"type": "string"}},
         "Limitations": {"type": "array", "items": {"type": "string"}},
         "Overall": {"type": "integer"},
@@ -171,6 +174,9 @@ REVIEW_SCHEMA = {
         "Pedagogical_Clarity",
         "Structural_Coherence",
         "Editorial_Polish",
+        "Voice_Fidelity",
+        "Readability",
+        "Warmth",
         "Overall",
         "Decision",
     ],
@@ -226,41 +232,79 @@ def _collect_search_tasks(outline: dict) -> list[dict]:
     plan = outline.get("intro_related_work_plan") or outline.get(
         "reference_research_plan", {}
     )
+    if not isinstance(plan, dict):
+        plan = {}
     intro_strat = plan.get("introduction_strategy", {})
+    if not isinstance(intro_strat, dict):
+        intro_strat = {}
     for direction in intro_strat.get("search_directions", []):
+        if isinstance(direction, dict):
+            direction_str = str(direction.get("query") or direction.get("topic") or direction)
+        else:
+            direction_str = str(direction)
+        if not direction_str.strip():
+            continue
         tasks.append(
             {
                 "section": "Introduction",
-                "focus": direction,
+                "focus": direction_str,
                 "context": f"Hook: {intro_strat.get('hook_hypothesis', '')}. Gap: {intro_strat.get('problem_gap_hypothesis', '')}",
                 "search_type": "exploration",
             }
         )
     rw_strat = plan.get("related_work_strategy", {})
+    if not isinstance(rw_strat, dict):
+        rw_strat = {}
     for sub in rw_strat.get("subsections", []):
+        if isinstance(sub, str):
+            sub_title = sub.strip()
+            if sub_title:
+                tasks.append(
+                    {
+                        "section": f"Related Work: {sub_title}",
+                        "focus": sub_title,
+                        "context": str(rw_strat.get("overview", "")),
+                        "search_type": "exploration",
+                    }
+                )
+            continue
+        if not isinstance(sub, dict):
+            continue
         queries = sub.get("limitation_search_queries") or [
-            f"{sub.get('subsection_title', '')} {sub.get('methodology_cluster', '')}"
+            f"{sub.get('subsection_title', '')} {sub.get('methodology_cluster', '')}".strip()
         ]
         for q in queries:
+            q_str = str(q).strip()
+            if not q_str:
+                continue
             tasks.append(
                 {
                     "section": f"Related Work: {sub.get('subsection_title', 'General')}",
-                    "focus": q,
+                    "focus": q_str,
                     "context": f"Mission: {sub.get('sota_investigation_mission', '')}. Hypothesis: {sub.get('limitation_hypothesis', '')}",
                     "search_type": "exploration",
                 }
             )
     blueprint = outline.get("section_plan") or outline.get("chapter_plan", [])
+    if not isinstance(blueprint, list):
+        blueprint = []
     for section in blueprint:
+        if not isinstance(section, dict):
+            continue
         sec_title = section.get("section_title", "Chapter")
         for sub in section.get("subsections", []):
+            if not isinstance(sub, dict):
+                continue
             sub_title = sub.get("subsection_title", "Section")
-            bullets = " ".join(sub.get("content_bullets", []))
+            bullets = " ".join(str(b) for b in sub.get("content_bullets", []))
             for hint in sub.get("citation_hints", []):
+                hint_str = str(hint).strip()
+                if not hint_str:
+                    continue
                 tasks.append(
                     {
                         "section": f"{sec_title} - {sub_title}",
-                        "focus": hint,
+                        "focus": hint_str,
                         "context": f"Canonical reference for: {bullets}",
                         "search_type": "targeted",
                     }
@@ -342,6 +386,14 @@ async def run_book_orchestra_workflow(
     book_style = workflow_args.get(
         "book_style", "Practical Architecture & Production Engineering"
     )
+    author_voice = str(
+        workflow_args.get("author_voice")
+        or (
+            "Derive and preserve the proposal's own voice. Prefer a warm, exploratory, "
+            "reader-facing engineering narrative with concrete examples and varied pacing; "
+            "do not default to dense institutional or reference-manual prose."
+        )
+    ).strip()
     use_plotting = bool(workflow_args.get("use_plotting", True))
     strict_latex = bool(workflow_args.get("strict_latex", False))
     max_reflections = int(workflow_args.get("max_reflections", 2))
@@ -423,7 +475,7 @@ async def run_book_orchestra_workflow(
 
     blueprint_prompt = (
         outline_agent_system_prompt.format(cutoff_date=research_cutoff)
-        + f"\n\nPublishing Profile:\n- Target Audience: {target_audience}\n- Book Style: {book_style}\n\n"
+        + f"\n\nPublishing Profile:\n- Target Audience: {target_audience}\n- Book Style: {book_style}\n- Author Voice Contract: {author_voice}\n\n"
         + f"--- 'book_proposal.md' ---\n{proposal_text}\n\n"
         + f"--- 'technical_notes.md' ---\n{notes_text}\n\n"
         + f"--- 'template.tex' ---\n{template_text}\n\n"
@@ -487,9 +539,16 @@ async def run_book_orchestra_workflow(
     for task, res in zip(search_tasks, discovery_results):
         if isinstance(res, str):
             res = parse_agent_json_response(res) or {}
+        if not isinstance(res, dict):
+            continue
         task_grounding = f"{grounding_notes_blob}\n{task.get('focus', '')}\n{task.get('context', '')}"
-        for cand in (res or {}).get("candidates", []):
-            title = cand.get("title", "").strip()
+        cands = res.get("candidates", [])
+        if not isinstance(cands, list):
+            continue
+        for cand in cands:
+            if not isinstance(cand, dict):
+                continue
+            title = str(cand.get("title") or "").strip()
             if not title:
                 continue
             if not is_reference_before_cutoff(cand, research_cutoff):
@@ -563,17 +622,32 @@ async def run_book_orchestra_workflow(
 
     # Inject citation candidates into outline
     plan = outline.get("intro_related_work_plan", {})
-    plan.setdefault("introduction_strategy", {})["citation_candidates"] = list(
-        set(section_to_keys.get("Introduction", []))
-    )
-    for sub in plan.get("related_work_strategy", {}).get("subsections", []):
-        k = f"Related Work: {sub.get('subsection_title', 'General')}"
-        sub["citation_candidates"] = section_to_keys.get(k, [])
+    if isinstance(plan, dict):
+        if not isinstance(plan.get("introduction_strategy"), dict):
+            plan["introduction_strategy"] = {}
+        plan["introduction_strategy"]["citation_candidates"] = list(
+            set(section_to_keys.get("Introduction", []))
+        )
+        rw = plan.get("related_work_strategy")
+        if isinstance(rw, dict):
+            for idx, sub in enumerate(rw.get("subsections", [])):
+                if isinstance(sub, dict):
+                    k = f"Related Work: {sub.get('subsection_title', 'General')}"
+                    sub["citation_candidates"] = section_to_keys.get(k, [])
+                elif isinstance(sub, str):
+                    k = f"Related Work: {sub.strip()}"
+                    rw["subsections"][idx] = {
+                        "subsection_title": sub.strip(),
+                        "citation_candidates": section_to_keys.get(k, []),
+                    }
     for sec in outline.get("section_plan", []):
+        if not isinstance(sec, dict):
+            continue
         sec_title = sec.get("section_title", "Chapter")
         for sub in sec.get("subsections", []):
-            k = f"{sec_title} - {sub.get('subsection_title', 'Section')}"
-            sub["citation_candidates"] = section_to_keys.get(k, [])
+            if isinstance(sub, dict):
+                k = f"{sec_title} - {sub.get('subsection_title', 'Section')}"
+                sub["citation_candidates"] = section_to_keys.get(k, [])
 
     with open(os.path.join(lit_output_dir, "references.bib"), "w", encoding="utf-8") as f:
         f.write("\n\n".join(bib_entries))
@@ -631,7 +705,8 @@ async def run_book_orchestra_workflow(
 
     # Generate Architecture Diagrams & Benchmark Plots in Parallel if enabled
     figures_info = []
-    plotting_plan = outline.get("plotting_plan", []) if use_plotting else []
+    raw_plotting = outline.get("plotting_plan", []) if use_plotting else []
+    plotting_plan = [fp for fp in raw_plotting if isinstance(fp, dict)] if isinstance(raw_plotting, list) else []
     if plotting_plan:
         log_fn(
             f"Generating {len(plotting_plan)} architecture diagrams and benchmark plots in parallel "
@@ -791,9 +866,12 @@ async def run_book_orchestra_workflow(
     # =========================================================================
     phase_fn("3. Multi-Chapter Authoring & Continuity Ledger")
     book_meta = outline.get("book_metadata", {})
+    if not isinstance(book_meta, dict):
+        book_meta = {}
     continuity_ledger = {
         "book_title": book_meta.get("title", ""),
         "target_audience": target_audience,
+        "author_voice": author_voice,
         "running_case_study": book_meta.get("running_case_study", ""),
         "terminology_glossary": book_meta.get("terminology_glossary", {}),
         "existing_chapters_or_sections": re.findall(
@@ -820,6 +898,7 @@ async def run_book_orchestra_workflow(
     author_prompt = (
         f"{section_writing_agent_prompt}\n\n"
         f"--- INPUT: book_continuity_ledger.json ---\n{json.dumps(continuity_ledger, indent=2, ensure_ascii=False)}\n\n"
+        f"--- INPUT: author_voice ---\n{author_voice}\n\n"
         f"--- INPUT: outline.json ---\n{json.dumps(outline, indent=2, ensure_ascii=False)}\n\n"
         f"--- INPUT: citation_map.json ---\n{citation_context}\n\n"
         f"--- INPUT: book_proposal.md ---\n{proposal_text}\n\n"
@@ -875,14 +954,17 @@ async def run_book_orchestra_workflow(
     initial_compiled = compile_latex(
         refinement_workdir, initial_pdf_path, "initial_draft"
     )
+    current_render_mode = get_last_compile_mode()
     if not initial_compiled or not os.path.exists(initial_pdf_path):
         raise RuntimeError(
             f"Initial LaTeX book manuscript failed syntax validation or compilation: {initial_tex_path}"
         )
     final_valid_pdf_path = initial_pdf_path
 
-    async def _run_editorial_review_board(pdf_path: str, label: str) -> tuple[dict, float]:
-        manuscript_text = load_book(pdf_path, min_size=10)
+    async def _run_editorial_review_board(tex_text: str, label: str) -> tuple[dict, float]:
+        # Editorial review is semantic, so always use source-derived text. Preview PDFs
+        # are visual conveniences and may lose indentation or unsupported TeX details.
+        manuscript_text = latex_to_markdown(tex_text)
 
         def _spawn_persona_reviewer(persona_tuple):
             persona_id, _ = persona_tuple
@@ -939,7 +1021,7 @@ async def run_book_orchestra_workflow(
         return meta_review, score
 
     current_review, current_score = await _run_editorial_review_board(
-        initial_pdf_path, "v0"
+        current_tex, "v0"
     )
     worklogs = {}
 
@@ -950,6 +1032,9 @@ async def run_book_orchestra_workflow(
         "Pedagogical_Clarity",
         "Structural_Coherence",
         "Editorial_Polish",
+        "Voice_Fidelity",
+        "Readability",
+        "Warmth",
     )
 
     def _extract_sub_scores(rev_dict: dict) -> dict:
@@ -968,6 +1053,8 @@ async def run_book_orchestra_workflow(
             f"EDITORIAL REVISION ITERATION {round_idx + 1}.\n"
             f"Current Editorial Review Board Score: {current_score}/10\n"
             f"Review Feedback:\n{json.dumps(current_review, indent=2, ensure_ascii=False)}\n\n"
+            f"Author Voice Contract (binding):\n{author_voice}\n\n"
+            f"Book Proposal (binding voice, scope, and chapter promise):\n{proposal_text}\n\n"
             f"Publisher Guidelines:\n{guidelines_text}\n\n"
             f"Technical Notes (Ground Truth):\n{notes_text}\n\n"
             f"Citation Map:\n{json.dumps(citation_map, indent=2, ensure_ascii=False)}\n\n"
@@ -993,12 +1080,13 @@ async def run_book_orchestra_workflow(
         with open(cur_tex_path, "w", encoding="utf-8") as f:
             f.write(new_tex)
         compiled_ok = compile_latex(refinement_workdir, cur_pdf_path, cur_name)
+        candidate_render_mode = get_last_compile_mode()
         if not compiled_ok or not os.path.exists(cur_pdf_path):
             log_fn(f"Revision {v_label} failed LaTeX validation/compilation; reverting.")
             continue
 
         new_review, new_score = await _run_editorial_review_board(
-            cur_pdf_path, v_label
+            new_tex, v_label
         )
         old_metrics = _extract_sub_scores(current_review)
         new_metrics = _extract_sub_scores(new_review)
@@ -1025,6 +1113,7 @@ async def run_book_orchestra_workflow(
             current_score = new_score
             current_review = new_review
             final_valid_pdf_path = cur_pdf_path
+            current_render_mode = candidate_render_mode
         elif new_score < current_score:
             worklogs[v_label] = {
                 "round": round_idx + 1,
@@ -1073,6 +1162,7 @@ async def run_book_orchestra_workflow(
             current_score = new_score
             current_review = new_review
             final_valid_pdf_path = cur_pdf_path
+            current_render_mode = candidate_render_mode
 
     with open(
         os.path.join(refinement_workdir, "content_refinement_worklog.json"),
@@ -1082,31 +1172,38 @@ async def run_book_orchestra_workflow(
         json.dump(worklogs, f, indent=4, ensure_ascii=False)
 
     # Production Typesetting QA pass (combines rendered PDF page snapshots + static layout diagnostics)
-    fmt_screenshots_dir = os.path.join(
-        refinement_workdir, "pdf_screenshots", "format_refinement", "v0"
-    )
-    grid_images = pdf_to_grid_images(final_valid_pdf_path, fmt_screenshots_dir)
     layout_diagnostics = inspect_book_layout_issues(
         current_tex, cwd=refinement_workdir
     )
 
-    fmt_prompt = (
-        f"{format_agent_system_prompt}\n\n"
-        f"Rendered Page Snapshots for Visual Inspection: {grid_images}\n"
-        f"Automated Layout & Overflow Diagnostics:\n{json.dumps(layout_diagnostics, indent=2, ensure_ascii=False)}\n\n"
-        f"Verify code listings (breaklines=true, <=88 chars/line), booktabs table widths, "
-        f"callout boxes, figure paths (figures/ prefix), and citation keys.\n\n"
-        f"Publisher Guidelines:\n{guidelines_text}\n\n"
-        f"Current LaTeX Manuscript:\n{current_tex}\n\n"
-        f"Return the FULL polished LaTeX wrapped in ```latex ... ```."
-    )
-    fmt_raw = await agent_fn(
-        prompt=fmt_prompt,
-        schema={"type": "string"},
-        role="Production Typesetting QA Editor",
-        model=reflection_model_tier,
-    )
-    polished_tex = parse_agent_latex_response(str(fmt_raw)) or current_tex
+    if current_render_mode == "preview":
+        log_fn(
+            "Preview render detected: skipping screenshot-driven LaTeX rewriting; "
+            "using deterministic source diagnostics only."
+        )
+        polished_tex = current_tex
+    else:
+        fmt_screenshots_dir = os.path.join(
+            refinement_workdir, "pdf_screenshots", "format_refinement", "v0"
+        )
+        grid_images = pdf_to_grid_images(final_valid_pdf_path, fmt_screenshots_dir)
+        fmt_prompt = (
+            f"{format_agent_system_prompt}\n\n"
+            f"Rendered Page Snapshots for Visual Inspection: {grid_images}\n"
+            f"Automated Layout & Overflow Diagnostics:\n{json.dumps(layout_diagnostics, indent=2, ensure_ascii=False)}\n\n"
+            f"Verify code listings (breaklines=true, <=88 chars/line), booktabs table widths, "
+            f"callout boxes, figure paths (figures/ prefix), and citation keys.\n\n"
+            f"Publisher Guidelines:\n{guidelines_text}\n\n"
+            f"Current LaTeX Manuscript:\n{current_tex}\n\n"
+            f"Return the FULL polished LaTeX wrapped in ```latex ... ```."
+        )
+        fmt_raw = await agent_fn(
+            prompt=fmt_prompt,
+            schema={"type": "string"},
+            role="Production Typesetting QA Editor",
+            model=reflection_model_tier,
+        )
+        polished_tex = parse_agent_latex_response(str(fmt_raw)) or current_tex
     polished_tex, _ = audit_and_clean_citations(
         polished_tex, set(citation_map.keys())
     )
@@ -1170,7 +1267,7 @@ async def run_book_orchestra_workflow(
         shutil.copy(final_valid_pdf_path, final_refined_pdf)
         render_mode = "preview"
 
-    is_publication_grade = render_mode in ("pdflatex", "tectonic")
+    is_publication_grade = render_mode in ("xelatex", "lualatex", "tectonic", "pdflatex")
     final_book_pdf = os.path.join(base_dir, "final_book.pdf")
     preview_book_pdf = os.path.join(base_dir, "preview_book.pdf")
     final_book_tex = os.path.join(base_dir, "final_book.tex")
@@ -1220,12 +1317,16 @@ async def run_book_orchestra_workflow(
         if stage_name == "build_manifest":
             manifest = {
                 "render_mode": render_mode,
+                "preview_backend": (
+                    get_last_preview_backend() if render_mode == "preview" else None
+                ),
                 "is_publication_grade": is_publication_grade,
                 "delivered_pdf": os.path.basename(delivered_pdf),
                 "final_book_tex": os.path.basename(final_book_tex),
                 "final_book_md": os.path.basename(final_book_md),
                 "research_cutoff": research_cutoff,
                 "strict_latex": strict_latex,
+                "author_voice": author_voice,
             }
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=4, ensure_ascii=False)

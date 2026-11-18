@@ -203,6 +203,37 @@ Never deploy unbounded queues in production gateways.
             self.assertTrue(len(grids) >= 1)
             self.assertTrue(os.path.exists(grids[0]))
 
+    def test_semantic_preview_preserves_korean_and_hides_latex_markup(self):
+        from utils.pdf_utils import compile_latex, load_book
+
+        sample_tex = r"""
+\documentclass{book}
+\title{한국어 미리보기}
+\author{테스트 저자}
+\begin{document}
+\chapter{첫 장}
+\begin{objectivesbox}
+독자가 자연스럽게 읽을 수 있어야 한다.
+\end{objectivesbox}
+\begin{lstlisting}[language=Python]
+async def fetch():
+    return "ok"
+\end{lstlisting}
+\end{document}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tex_path = os.path.join(tmpdir, "korean.tex")
+            pdf_path = os.path.join(tmpdir, "korean.pdf")
+            with open(tex_path, "w", encoding="utf-8") as stream:
+                stream.write(sample_tex)
+
+            self.assertTrue(compile_latex(tmpdir, pdf_path, "korean"))
+            extracted = load_book(pdf_path, min_size=10)
+            self.assertIn("한국어 미리보기", extracted)
+            self.assertIn("첫 장", extracted)
+            self.assertNotIn(r"\begin{objectivesbox}", extracted)
+            self.assertNotIn("```", extracted)
+
     def test_cli_arg_parsers(self):
         from book_writing_cli import build_arg_parser
 
@@ -1456,8 +1487,26 @@ class TestProductionHardeningReview(unittest.TestCase):
                 )
                 self.assertTrue(ok_preview)
                 self.assertEqual(get_last_compile_mode(), "preview")
+                from utils.pdf_utils import get_last_preview_backend, _find_preview_font
+                self.assertIn(
+                    get_last_preview_backend(),
+                    ("pandoc+pymupdf-story", "markdown+pymupdf-story", "minimal-pdf"),
+                )
                 self.assertTrue(os.path.exists(preview_p))
                 self.assertFalse(os.path.exists(final_p))
+
+                # Regression check: never pick ancient Gothic script font (NotoSansGothic) for CJK
+                chosen_font = _find_preview_font()
+                if chosen_font is not None:
+                    self.assertNotIn("NotoSansGothic", chosen_font)
+                for tpl_name in (
+                    "oreilly_style_book",
+                    "manning_in_action_book",
+                    "systems_handbook",
+                ):
+                    tpl_path = os.path.join(REPO_ROOT, "templates", tpl_name, "template.tex")
+                    with open(tpl_path, "r", encoding="utf-8") as tf:
+                        self.assertNotIn("Noto Sans Gothic", tf.read())
 
     def test_6_7_8_9_unified_cli_defaults_scoring_retries_and_dynamic_cutoff(self):
         from book_writing_cli import build_arg_parser

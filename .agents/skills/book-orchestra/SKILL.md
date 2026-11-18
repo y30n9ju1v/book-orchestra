@@ -26,6 +26,7 @@ Call the `run_workflow` tool with `ScriptPath` pointing to `workflows/book_orche
     "technical_notes_filename": "technical_notes.md",
     "target_audience": "Senior Software & Systems Engineers",
     "book_style": "Practical Architecture & Production Engineering",
+    "author_voice": "Warm, exploratory, reader-facing, and rich in concrete examples",
     "use_plotting": true,
     "max_reflections": 2
   }
@@ -38,7 +39,7 @@ Call the `run_workflow` tool with `ScriptPath` pointing to `workflows/book_orche
 - `templates/systems_handbook`: Addison-Wesley / DDIA / Google SRE style deep systems engineering handbook.
 
 ## Generated Outputs in `output_dir`
-- `final_book.pdf` (when compiled by `pdflatex`/`tectonic`) or `preview_book.pdf` (when no TeX engine is installed and `strict_latex=false`): Generated book PDF
+- `final_book.pdf` (when compiled by XeLaTeX/LuaLaTeX/Tectonic/pdfLaTeX) or `preview_book.pdf` (when no TeX engine is installed and `strict_latex=false`): Generated book PDF
 - `build_manifest.json`: Build metadata recording `render_mode` (`pdflatex`, `tectonic`, or `preview`) and `is_publication_grade`
 - `final_book.tex`: Full compilable LaTeX book manuscript (with `references.bib` and `figures/` in `output_dir`)
 - `final_book.md`: Clean Markdown book manuscript for Markdown/EPUB/Pandoc publishing toolchains

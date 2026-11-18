@@ -508,11 +508,12 @@ def handle_live_execution(
 
                                 st.session_state.logs[current_step_name] += line
 
-                    if process.poll() == 0:
+                    run_dir = st.session_state.run_directory
+                    final_pdf_path = os.path.join(run_dir, "final_book.pdf")
+                    if process.poll() == 0 and os.path.exists(final_pdf_path):
                         st.session_state.current_step = len(steps_list)
                         if recipient_email:
                             attachments = []
-                            run_dir = st.session_state.run_directory
                             for fname in ("final_book.pdf", "final_book.md"):
                                 fpath = os.path.join(run_dir, fname)
                                 if os.path.exists(fpath):
@@ -539,6 +540,10 @@ def handle_live_execution(
                                 "Generated Technical Book",
                                 attachments=attachments,
                             )
+                    else:
+                        st.session_state.logs[
+                            current_step_name
+                        ] += f"\n❌ Book generation exited with code {process.poll()} (final_book.pdf exists: {os.path.exists(final_pdf_path)}).\n"
                 except Exception as exception_object:
                     st.session_state.logs[
                         "Editorial Review Board"

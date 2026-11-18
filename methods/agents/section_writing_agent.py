@@ -21,11 +21,13 @@ Completes multi-chapter technical books in LaTeX while maintaining a Continuity 
 import json
 import os
 import re
+import shutil
 from typing import List, Dict
 
 from methods.prompts.section_writing_agent import section_writing_agent_prompt
 from utils.gemini_utils import parse_gemini_latex_results
 from utils.llm_backend_utils import call_llm_with_images
+from utils.reference_verifier import audit_and_clean_citations
 
 
 class SectionWritingAgent:
@@ -147,6 +149,8 @@ class SectionWritingAgent:
     def _export_modular_chapters(self, latex_text: str, output_dir: str) -> List[str]:
         """Splits a compiled book LaTeX manuscript into modular chapter files under chapters/."""
         chapters_dir = os.path.join(output_dir, "chapters")
+        if os.path.exists(chapters_dir):
+            shutil.rmtree(chapters_dir, ignore_errors=True)
         os.makedirs(chapters_dir, exist_ok=True)
         exported_paths = []
 
@@ -273,6 +277,10 @@ Here are the input materials for authoring the technical book manuscript.
             check_parsed_response_not_none=True,
         )
         cleaned_latex = response_dict["parsed_response"]
+        if citation_map:
+            cleaned_latex, _ = audit_and_clean_citations(
+                cleaned_latex, set(citation_map.keys())
+            )
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:

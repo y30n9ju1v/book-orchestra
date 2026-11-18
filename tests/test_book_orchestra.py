@@ -367,6 +367,7 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
                             "reason": "Canonical PagedAttention paper",
                             "authors": ["Woosuk Kwon", "Zhuohan Li"],
                             "venue": "SOSP",
+                            "doi": "10.1145/3600006.3613165",
                         }
                     ],
                 }
@@ -757,6 +758,7 @@ async def acquire(tokens: int) -> bool:
                             "year": 2023,
                             "authors": ["Woosuk Kwon"],
                             "venue": "SOSP",
+                            "doi": "10.1145/3600006.3613165",
                             "reason": "PagedAttention",
                         }
                     ],
@@ -838,7 +840,304 @@ async def acquire(tokens: int) -> bool:
             self.assertTrue(os.path.exists(res["final_book_pdf"]))
             self.assertTrue(os.path.exists(res["final_book_tex"]))
             self.assertTrue(os.path.exists(res["final_book_md"]))
+            self.assertTrue(os.path.exists(os.path.join(out_dir, "references.bib")))
+            self.assertTrue(os.path.isdir(os.path.join(out_dir, "figures")))
             self.assertGreaterEqual(len(res["chapters"]), 2)
+
+
+class TestReviewFixesAndSecurityHardening(unittest.TestCase):
+    def test_finding1_cli_exits_nonzero_on_failure_and_passes_all_args(self):
+        import book_writing_cli
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_dir = os.path.join(
+                REPO_ROOT, "examples", "distributed_llm_systems_book", "raw_materials"
+            )
+            out_dir = os.path.join(tmpdir, "out_emit")
+
+            # 1. --emit_workflow_only exits 0 and forwards all CLI options
+            rc = book_writing_cli.main(
+                [
+                    "--raw_materials_dir",
+                    raw_dir,
+                    "--output_dir",
+                    out_dir,
+                    "--reflection_model_name",
+                    "pro",
+                    "--plotting_model_name",
+                    "flash",
+                    "--image_model_name",
+                    "image-generator",
+                    "--plotting_max_critic_rounds",
+                    "4",
+                    "--max_reflections",
+                    "5",
+                    "--emit_workflow_only",
+                ]
+            )
+            self.assertEqual(rc, 0)
+            payload_path = os.path.join(out_dir, "agy_run_workflow_payload.json")
+            self.assertTrue(os.path.exists(payload_path))
+            with open(payload_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            wf_args = payload["Args"]
+            self.assertEqual(wf_args["reflection_model_name"], "pro")
+            self.assertEqual(wf_args["plotting_model_name"], "flash")
+            self.assertEqual(wf_args["image_model_name"], "image-generator")
+            self.assertEqual(wf_args["plotting_max_critic_rounds"], 4)
+            self.assertEqual(wf_args["max_reflections"], 5)
+            self.assertEqual(payload["ScriptPath"], "workflows/book_orchestra_workflow.py")
+
+            # 2. When no runner is available and --emit_workflow_only is NOT set, CLI exits 1
+            out_fail = os.path.join(tmpdir, "out_fail")
+            with (
+                patch("utils.gemini_utils.get_antigravity_agent_runner", return_value=None),
+                patch("utils.gemini_utils.enable_agy_cli_runner", return_value=False),
+            ):
+                with self.assertRaises(SystemExit) as cm:
+                    book_writing_cli.main(
+                        [
+                            "--raw_materials_dir",
+                            raw_dir,
+                            "--output_dir",
+                            out_fail,
+                        ]
+                    )
+                self.assertEqual(cm.exception.code, 1)
+
+            # 3. When write_single_book fails (returns False), CLI exits 1
+            out_fail2 = os.path.join(tmpdir, "out_fail2")
+            with (
+                patch("utils.gemini_utils.get_antigravity_agent_runner", return_value=lambda *a, **k: "{}"),
+                patch("methods.book_writer.write_single_book", return_value=False),
+            ):
+                with self.assertRaises(SystemExit) as cm2:
+                    book_writing_cli.main(
+                        [
+                            "--raw_materials_dir",
+                            raw_dir,
+                            "--output_dir",
+                            out_fail2,
+                        ]
+                    )
+                self.assertEqual(cm2.exception.code, 1)
+
+    def test_finding2_plot_code_ast_and_subprocess_sandbox(self):
+        from utils.diagram_plot_utils import (
+            UnsafePlotCodeError,
+            validate_plot_code_ast,
+            execute_plot_code_worker,
+        )
+
+        # Malicious snippets must be rejected by AST validation and subprocess sandbox
+        malicious_snippets = [
+            "import os\nos.system('id')",
+            "import subprocess\nsubprocess.Popen(['ls'])",
+            "open('/etc/passwd').read()",
+            "__import__('os').listdir('.')",
+            "().__class__.__base__.__subclasses__()",
+            "import matplotlib.pyplot as plt\nplt.savefig('/tmp/evil.png')",
+        ]
+        for snippet in malicious_snippets:
+            with self.assertRaises(UnsafePlotCodeError, msg=f"Snippet should fail AST check: {snippet}"):
+                validate_plot_code_ast(snippet)
+            res = execute_plot_code_worker(snippet)
+            self.assertIsNone(res)
+
+        # Valid matplotlib snippet should execute cleanly inside isolated subprocess
+        valid_snippet = """
+import matplotlib.pyplot as plt
+import numpy as np
+
+x = np.array([1, 2, 3, 4])
+y = np.array([10, 20, 25, 30])
+fig, ax = plt.subplots(figsize=(4, 3))
+ax.plot(x, y, label='Throughput')
+ax.legend()
+"""
+        tree = validate_plot_code_ast(valid_snippet)
+        self.assertIsNotNone(tree)
+        res = execute_plot_code_worker(valid_snippet)
+        self.assertIsNotNone(res)
+        self.assertTrue(len(res) > 100)
+
+    def test_finding3_reference_verifier_cutoff_identifiers_and_bibtex_types(self):
+        from utils.reference_verifier import (
+            is_reference_before_cutoff,
+            has_verifiable_identifier_or_grounding,
+            infer_bibtex_entry_type,
+            format_bibtex_entry,
+            audit_and_clean_citations,
+        )
+
+        # 1. Valid conference paper with DOI before cutoff
+        c_paper = {
+            "citation_key": "Kwon2023PagedAttention",
+            "title": "Efficient Memory Management for Large Language Model Serving with PagedAttention",
+            "authors": ["Woosuk Kwon", "Zhuohan Li"],
+            "year": 2023,
+            "venue": "ACM SOSP Conference",
+            "doi": "10.1145/3600006.3613165",
+            "entry_type": "inproceedings",
+        }
+        self.assertTrue(is_reference_before_cutoff(c_paper, "2026-11"))
+        ok, src = has_verifiable_identifier_or_grounding(c_paper)
+        self.assertTrue(ok)
+        self.assertEqual(src, "doi:10.1145/3600006.3613165")
+        self.assertEqual(infer_bibtex_entry_type(c_paper), "inproceedings")
+        bib_paper = format_bibtex_entry(c_paper)
+        self.assertIn("@inproceedings{Kwon2023PagedAttention,", bib_paper)
+        self.assertIn("doi={10.1145/3600006.3613165}", bib_paper)
+
+        # 2. Valid RFC standard -> @techreport
+        c_rfc = {
+            "citation_key": "Bishop2022HTTP3",
+            "title": "RFC 9114: HTTP/3",
+            "authors": ["Mike Bishop"],
+            "year": 2022,
+            "venue": "IETF",
+            "rfc_number": "RFC 9114",
+            "url": "https://www.rfc-editor.org/rfc/rfc9114",
+        }
+        self.assertTrue(is_reference_before_cutoff(c_rfc, "2026-11"))
+        self.assertTrue(has_verifiable_identifier_or_grounding(c_rfc)[0])
+        self.assertEqual(infer_bibtex_entry_type(c_rfc), "techreport")
+        self.assertIn("@techreport{Bishop2022HTTP3,", format_bibtex_entry(c_rfc))
+
+        # 3. Valid engineering book with ISBN -> @book
+        c_book = {
+            "citation_key": "Kleppmann2017DDIA",
+            "title": "Designing Data-Intensive Applications",
+            "authors": ["Martin Kleppmann"],
+            "year": 2017,
+            "venue": "O'Reilly Media",
+            "isbn": "978-1449373320",
+        }
+        self.assertTrue(is_reference_before_cutoff(c_book, "2026-11"))
+        self.assertTrue(has_verifiable_identifier_or_grounding(c_book)[0])
+        self.assertEqual(infer_bibtex_entry_type(c_book), "book")
+        bib_book = format_bibtex_entry(c_book)
+        self.assertIn("@book{Kleppmann2017DDIA,", bib_book)
+        self.assertIn("isbn={978-1449373320}", bib_book)
+
+        # 4. Future reference after cutoff (2028 > 2026-11) -> MUST be rejected
+        c_future = {
+            "title": "Future Quantum GPU Interconnects",
+            "authors": ["Jane Doe"],
+            "year": 2028,
+            "doi": "10.1145/9999999.9999999",
+        }
+        self.assertFalse(is_reference_before_cutoff(c_future, "2026-11"))
+
+        # 5. Unverified hallucinated reference (no DOI/arXiv/RFC/ISBN/URL and not in source notes) -> MUST be rejected
+        c_hallucinated = {
+            "title": "Totally Hallucinated Paper With No Identifier",
+            "authors": ["Imaginary Author"],
+            "year": 2024,
+            "venue": "FakeConf",
+        }
+        self.assertFalse(
+            has_verifiable_identifier_or_grounding(
+                c_hallucinated, grounding_text="AtlasGW builds on PagedAttention."
+            )[0]
+        )
+
+        # 6. Verify citation auditing strips hallucinated \cite keys
+        allowed = {"Kwon2023PagedAttention", "Kleppmann2017DDIA"}
+        tex_with_hallucination = (
+            r"As shown in \cite{Kwon2023PagedAttention,Hallucinated2099Fake} and \cite{NonExistentKey}."
+        )
+        cleaned_tex, removed = audit_and_clean_citations(tex_with_hallucination, allowed)
+        self.assertIn("Hallucinated2099Fake", removed)
+        self.assertIn("NonExistentKey", removed)
+        self.assertIn(r"\cite{Kwon2023PagedAttention}", cleaned_tex)
+        self.assertNotIn("Hallucinated2099Fake", cleaned_tex)
+        self.assertNotIn("NonExistentKey", cleaned_tex)
+
+    def test_finding4_latex_syntax_validation_and_layout_diagnostics(self):
+        from utils.pdf_utils import (
+            compile_latex,
+            validate_latex_syntax,
+            inspect_book_layout_issues,
+        )
+
+        # 1. Broken LaTeX with unclosed environment must fail compile_latex and NOT create a fake PDF
+        broken_tex = r"""\documentclass{book}
+\begin{document}
+\chapter{Broken Chapter}
+\begin{objectivesbox}
+Unclosed environment here!
+\end{document}
+"""
+        is_valid, errors = validate_latex_syntax(broken_tex)
+        self.assertFalse(is_valid)
+        self.assertTrue(len(errors) > 0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tex_path = os.path.join(tmpdir, "broken.tex")
+            pdf_path = os.path.join(tmpdir, "broken.pdf")
+            with open(tex_path, "w", encoding="utf-8") as f:
+                f.write(broken_tex)
+
+            ok = compile_latex(tmpdir, pdf_path, "broken")
+            self.assertFalse(ok)
+            self.assertFalse(os.path.exists(pdf_path))
+
+        # 2. Layout inspector detects >88 char lstlisting lines and wide unwrapped tables
+        wide_line = "x = " + ("a" * 100)
+        layout_tex = rf"""\documentclass{{book}}
+\begin{{document}}
+\chapter{{Layout Test}}
+\begin{{lstlisting}}[language=Python]
+{wide_line}
+\end{{lstlisting}}
+\begin{{table}}[htbp]
+\begin{{tabular}}{{l|l|l|l|l|l}}
+A & B & C & D & E & F \\
+\end{{tabular}}
+\end{{table}}
+\end{{document}}
+"""
+        diag = inspect_book_layout_issues(layout_tex)
+        total_issues = len(diag.get("figure_and_tables", {})) + len(diag.get("other_issues", []))
+        self.assertGreaterEqual(total_issues, 2)
+
+    def test_finding5_and_6_chapter_cleanup_and_no_hardcoded_user_paths(self):
+        from methods.agents.section_writing_agent import SectionWritingAgent
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = SectionWritingAgent.__new__(SectionWritingAgent)
+            chapters_dir = os.path.join(tmpdir, "chapters")
+            os.makedirs(chapters_dir, exist_ok=True)
+            stale_path = os.path.join(chapters_dir, "ch99_stale_old_chapter.tex")
+            with open(stale_path, "w", encoding="utf-8") as f:
+                f.write("stale")
+
+            agent._export_modular_chapters(
+                r"\documentclass{book}\begin{document}\chapter{Fresh Chapter}\label{ch:fresh}Body\end{document}",
+                tmpdir,
+            )
+            files = os.listdir(chapters_dir)
+            self.assertNotIn("ch99_stale_old_chapter.tex", files)
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0].startswith("ch01_fresh_chapter"))
+
+        # Check no hardcoded /Users/yeongjun paths in skill, workflow, CLI, or README
+        for rel_path in (
+            os.path.join(".agents", "skills", "book-orchestra", "SKILL.md"),
+            os.path.join("workflows", "book_orchestra_workflow.py"),
+            os.path.join("workflows", "workflow.json"),
+            "book_writing_cli.py",
+            "README.md",
+        ):
+            full_p = os.path.join(REPO_ROOT, rel_path)
+            with open(full_p, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertNotIn(
+                "/Users/yeongjun",
+                content,
+                f"Hardcoded user path found in {rel_path}",
+            )
 
 
 if __name__ == "__main__":

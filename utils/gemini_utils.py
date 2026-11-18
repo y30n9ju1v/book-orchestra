@@ -24,7 +24,9 @@ without external API keys.
 import re
 import json
 import os
+import shutil
 import struct
+import subprocess
 import zlib
 import base64
 from typing import Dict, Any, Callable, Optional, List
@@ -92,6 +94,98 @@ def set_antigravity_agent_runner(
 
 def get_antigravity_agent_runner() -> Optional[Callable[..., str]]:
     return _antigravity_agent_runner
+
+
+def find_agy_cli_binary() -> Optional[str]:
+    """Locates the Antigravity CLI (`agy`) binary if installed on the host."""
+    candidates = [
+        os.environ.get("AGY_BIN"),
+        shutil.which("agy"),
+        os.path.expanduser("~/.local/bin/agy"),
+        "/Applications/Gemini.app/Contents/Helpers/agy",
+    ]
+    for cand in candidates:
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def create_agy_cli_runner(
+    agy_bin: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
+    timeout_sec: int = 300,
+) -> Callable[..., str]:
+    """
+    Creates an Antigravity CLI (`agy --print`) runner so subprocesses (CLI / Streamlit)
+    can execute prompts through Antigravity without external Gemini API keys.
+    """
+    resolved_bin = agy_bin or find_agy_cli_binary()
+    if not resolved_bin:
+        raise RuntimeError(
+            "Antigravity CLI ('agy') binary not found on PATH or standard install locations."
+        )
+
+    def _runner(
+        prompt: str,
+        system_instruction: Optional[str] = None,
+        model_name: str = "inherit",
+        images: Optional[List[str]] = None,
+        generation_configs: Optional[dict] = None,
+    ) -> str:
+        full_prompt = prompt
+        if system_instruction:
+            full_prompt = f"{system_instruction}\n\n{prompt}"
+        if images:
+            valid_imgs = [p for p in images if p and os.path.exists(p)]
+            if valid_imgs:
+                full_prompt += "\n\nAttached image files to inspect:\n" + "\n".join(
+                    f"- {p}" for p in valid_imgs
+                )
+
+        cmd = [resolved_bin, "--disable-slash-commands", "--print", full_prompt]
+        if workspace_dir and os.path.isdir(workspace_dir):
+            cmd.extend(["--add-dir", os.path.abspath(workspace_dir)])
+        if model_name and model_name not in ("inherit", "default", ""):
+            cmd.extend(["--model", model_name])
+
+        proc = subprocess.run(
+            cmd,
+            cwd=workspace_dir or os.getcwd(),
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+        if proc.returncode != 0:
+            err_detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(
+                f"Antigravity CLI ('{resolved_bin} --print') failed with exit code {proc.returncode}: {err_detail}"
+            )
+        output = (proc.stdout or "").strip()
+        if not output:
+            raise RuntimeError("Antigravity CLI returned empty output.")
+        return output
+
+    return _runner
+
+
+def enable_agy_cli_runner(
+    workspace_dir: Optional[str] = None, timeout_sec: int = 300
+) -> bool:
+    """
+    If no in-process Antigravity runner is registered yet, registers the `agy --print`
+    CLI runner if `agy` is available. Returns True if a runner is active.
+    """
+    if _antigravity_agent_runner is not None:
+        return True
+    agy_bin = find_agy_cli_binary()
+    if not agy_bin:
+        return False
+    set_antigravity_agent_runner(
+        create_agy_cli_runner(
+            agy_bin=agy_bin, workspace_dir=workspace_dir, timeout_sec=timeout_sec
+        )
+    )
+    return True
 
 
 def parse_gemini_json_results(response: str):

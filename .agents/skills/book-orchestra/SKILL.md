@@ -8,16 +8,15 @@ description: Orchestrate multi-agent IT and engineering book authoring, diagram 
 Use this skill whenever the user asks to plan, research, write, illustrate, review, or typeset an **IT, Software Engineering, Systems, or AI Engineering Book** in this workspace.
 
 ## Zero External API Keys Required
-BookOrchestra runs natively on Antigravity's built-in **`run_workflow`** engine via [workflows/book_orchestra_workflow.py](file:///Users/yeongjun/Develops/book-orchestra/workflows/book_orchestra_workflow.py). Do **NOT** ask the user for a `GEMINI_API_KEY`, `VERTEX_AI_PROJECT`, `OPENAI_API_KEY`, or `SEMANTIC_SCHOLAR_API_KEY`.
+BookOrchestra runs natively on Antigravity's built-in **`run_workflow`** engine via `workflows/book_orchestra_workflow.py`. Do **NOT** ask the user for a `GEMINI_API_KEY`, `VERTEX_AI_PROJECT`, `OPENAI_API_KEY`, or `SEMANTIC_SCHOLAR_API_KEY`.
 
 ## How to Run BookOrchestra via `run_workflow`
 
-Call the `run_workflow` tool with `ScriptPath` pointing to `workflows/book_orchestra_workflow.py` and `Args` configured for the target book materials and publisher template:
+Call the `run_workflow` tool with `ScriptPath` pointing to `workflows/book_orchestra_workflow.py` in the current workspace and `Args` configured for the target book materials and publisher template:
 
 ```json
 {
-  "ScriptPath": "/Users/yeongjun/Develops/book-orchestra/workflows/book_orchestra_workflow.py",
-  "Cwd": "/Users/yeongjun/Develops/book-orchestra",
+  "ScriptPath": "workflows/book_orchestra_workflow.py",
   "Description": "Run BookOrchestra multi-agent technical book publishing pipeline",
   "Args": {
     "raw_materials_dir": "examples/distributed_llm_systems_book/raw_materials",

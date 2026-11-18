@@ -102,6 +102,12 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
         help="Maximum rounds of visual QA critic self-correction.",
     )
     parser.add_argument(
+        "--max_reflections",
+        type=int,
+        default=3,
+        help="Maximum number of 3-Persona Editorial Review Board refinement rounds.",
+    )
+    parser.add_argument(
         "--emit_workflow_only",
         action="store_true",
         help="Write the Antigravity run_workflow payload JSON to output_dir and exit.",
@@ -137,10 +143,13 @@ def main(argv=None):
         shutil.copytree(args.raw_materials_dir, target_raw_materials)
 
     import json
-    from utils.gemini_utils import get_antigravity_agent_runner
+    from utils.gemini_utils import (
+        enable_agy_cli_runner,
+        get_antigravity_agent_runner,
+    )
 
     repo_root = os.path.dirname(os.path.abspath(__file__))
-    workflow_script = os.path.join(repo_root, "workflows", "book_orchestra_workflow.py")
+    workflow_script = "workflows/book_orchestra_workflow.py"
     workflow_payload = {
         "ScriptPath": workflow_script,
         "Cwd": repo_root,
@@ -154,22 +163,40 @@ def main(argv=None):
             "target_audience": args.target_audience,
             "book_style": args.book_style,
             "use_plotting": args.use_plotting,
+            "max_reflections": args.max_reflections,
             "research_cutoff": args.research_cutoff,
             "model": args.writer_model_name,
+            "writer_model_name": args.writer_model_name,
+            "reflection_model_name": args.reflection_model_name,
+            "plotting_model_name": args.plotting_model_name,
+            "image_model_name": args.image_model_name,
+            "plotting_max_critic_rounds": args.plotting_max_critic_rounds,
         },
     }
     payload_path = os.path.join(base_dir, "agy_run_workflow_payload.json")
     with open(payload_path, "w", encoding="utf-8") as f:
         json.dump(workflow_payload, f, indent=2, ensure_ascii=False)
 
-    if args.emit_workflow_only or get_antigravity_agent_runner() is None:
+    if args.emit_workflow_only:
         print(
             f"✅ Antigravity run_workflow payload written to: {payload_path}\n"
             f"Run inside Antigravity without external API keys using `run_workflow`:\n"
             f"{json.dumps(workflow_payload, indent=2, ensure_ascii=False)}"
         )
-        if args.emit_workflow_only:
-            return
+        return 0
+
+    if get_antigravity_agent_runner() is None:
+        if enable_agy_cli_runner(workspace_dir=repo_root):
+            print("🔌 Connected to local Antigravity CLI (`agy --print`) runner.")
+        else:
+            print(
+                f"❌ Error: No in-process Antigravity runner or `agy` CLI binary found.\n"
+                f"A `run_workflow` payload has been written to: {payload_path}\n"
+                f"To execute natively inside Antigravity chat, invoke `run_workflow` with `workflows/book_orchestra_workflow.py`, "
+                f"or pass `--emit_workflow_only` if you only want to generate the payload.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if not args.use_plotting:
         has_figures = False
@@ -194,7 +221,7 @@ def main(argv=None):
         from methods.book_writer_with_plotting import write_single_book
 
         print(f"🚀 Starting Technical Book Generation (WITH DIAGRAMS/PLOTTING) in {base_dir}")
-        write_single_book(
+        success = write_single_book(
             base_dir=base_dir,
             latex_template_dir=args.latex_template_dir,
             idea_filename=args.proposal_filename,
@@ -207,12 +234,13 @@ def main(argv=None):
             plotting_max_critic_rounds=args.plotting_max_critic_rounds,
             target_audience=args.target_audience,
             book_style=args.book_style,
+            max_reflections=args.max_reflections,
         )
     else:
         from methods.book_writer import write_single_book
 
         print(f"🚀 Starting Technical Book Generation (WITHOUT PLOTTING) in {base_dir}")
-        write_single_book(
+        success = write_single_book(
             base_dir=base_dir,
             latex_template_dir=args.latex_template_dir,
             idea_filename=args.proposal_filename,
@@ -222,7 +250,18 @@ def main(argv=None):
             research_cutoff=args.research_cutoff,
             target_audience=args.target_audience,
             book_style=args.book_style,
+            max_reflections=args.max_reflections,
         )
+
+    final_pdf_path = os.path.join(base_dir, "final_book.pdf")
+    if not success or not os.path.exists(final_pdf_path):
+        print(
+            f"❌ Book generation failed (final_book.pdf missing or pipeline returned False). Output dir: {base_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return 0
 
 
 if __name__ == "__main__":

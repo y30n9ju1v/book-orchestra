@@ -64,6 +64,12 @@ from utils.gemini_utils import (
     parse_gemini_latex_results,
     types,
 )
+from utils.reference_verifier import (
+    is_reference_before_cutoff,
+    has_verifiable_identifier_or_grounding,
+    format_bibtex_entry,
+    audit_and_clean_citations,
+)
 
 
 class CandidatePaper(BaseModel):
@@ -73,6 +79,13 @@ class CandidatePaper(BaseModel):
     authors: Optional[List[str]] = None
     venue: Optional[str] = None
     summary: Optional[str] = None
+    source_type: Optional[str] = None
+    doi: Optional[str] = None
+    arxiv_id: Optional[str] = None
+    rfc_number: Optional[str] = None
+    isbn: Optional[str] = None
+    url: Optional[str] = None
+    publication_date: Optional[str] = None
 
 
 class DiscoveryResult(BaseModel):
@@ -90,6 +103,13 @@ class PaperData(BaseModel):
     citation_count: int
     found_in_section: str
     reason: str
+    source_type: Optional[str] = None
+    doi: Optional[str] = None
+    arxiv_id: Optional[str] = None
+    rfc_number: Optional[str] = None
+    isbn: Optional[str] = None
+    url: Optional[str] = None
+    verification_source: Optional[str] = None
     journal: Optional[str] = None
     volume: Optional[str] = None
     pages: Optional[str] = None
@@ -366,26 +386,38 @@ class HybridLiteratureAgent:
         return []
 
     def _enrich_and_register_paper(self, cand, task, registry, cutoff_date):
-        cand_title = getattr(cand, "title", None) or (
-            cand.get("title") if isinstance(cand, dict) else None
-        )
-        cand_year = getattr(cand, "year", None) or (
-            cand.get("year") if isinstance(cand, dict) else None
-        )
-        cand_reason = getattr(cand, "reason", None) or (
-            cand.get("reason", "") if isinstance(cand, dict) else ""
-        )
-        cand_authors = getattr(cand, "authors", None) or (
-            cand.get("authors") if isinstance(cand, dict) else None
-        )
-        cand_venue = getattr(cand, "venue", None) or (
-            cand.get("venue") if isinstance(cand, dict) else None
-        )
-        cand_summary = getattr(cand, "summary", None) or (
-            cand.get("summary") if isinstance(cand, dict) else None
-        )
+        cand_dict = cand.model_dump() if hasattr(cand, "model_dump") else (dict(cand) if isinstance(cand, dict) else {})
+        cand_title = cand_dict.get("title")
+        cand_year = cand_dict.get("year")
+        cand_reason = cand_dict.get("reason", "")
+        cand_authors = cand_dict.get("authors")
+        cand_venue = cand_dict.get("venue")
+        cand_summary = cand_dict.get("summary")
 
         if not cand_title:
+            return
+
+        if not is_reference_before_cutoff(cand_dict, cutoff_date):
+            self._safe_print(
+                f"      -> ⏭️ Skipped reference after cutoff ({cutoff_date}): {cand_title} ({cand_year})"
+            )
+            return
+
+        grounding_blob = "\n".join(
+            [
+                self.context_files.get("idea.md", ""),
+                self.context_files.get("experimental_log.md", ""),
+                str(task.get("focus", "")),
+                str(task.get("context", "")),
+            ]
+        )
+        is_verified, ver_src = has_verifiable_identifier_or_grounding(
+            cand_dict, grounding_text=grounding_blob
+        )
+        if not is_verified:
+            self._safe_print(
+                f"      -> ⏭️ Rejected unverified reference (missing DOI/URL/RFC/ISBN or source grounding): {cand_title}"
+            )
             return
 
         norm_title = self._normalize_title(cand_title)
@@ -395,9 +427,7 @@ class HybridLiteratureAgent:
                 return
 
         try:
-            year_val = int(cand_year) if cand_year else 2024
-            if not self._is_paper_allowed({"year": year_val}, cutoff_date):
-                return
+            year_val = int(cand_year)
             authors_list = cand_authors if cand_authors else ["Technical Authors"]
             abstract_text = cand_summary or cand_reason or cand_title
             full_obj = PaperData(
@@ -412,6 +442,14 @@ class HybridLiteratureAgent:
                 citation_count=0,
                 found_in_section=task["section"],
                 reason=cand_reason,
+                source_type=cand_dict.get("source_type"),
+                doi=cand_dict.get("doi"),
+                arxiv_id=cand_dict.get("arxiv_id"),
+                rfc_number=cand_dict.get("rfc_number"),
+                isbn=cand_dict.get("isbn"),
+                url=cand_dict.get("url"),
+                verification_source=ver_src,
+                publication_date=cand_dict.get("publication_date"),
             )
 
             final_norm_title = self._normalize_title(full_obj.title)
@@ -420,7 +458,7 @@ class HybridLiteratureAgent:
                 if final_norm_title not in registry:
                     registry[final_norm_title] = full_obj
                     self._safe_print(
-                        f"      -> 📚 Added reference: {full_obj.title}"
+                        f"      -> 📚 Added verified reference ({ver_src}): {full_obj.title}"
                     )
         except Exception:
             pass
@@ -550,7 +588,10 @@ class HybridLiteratureAgent:
             generation_configs={"system_instruction": writer_system_prompt},
             result_parsing_func=parse_gemini_latex_results,
         )
-        return response_dict["parsed_response"]
+        cleaned_latex, _ = audit_and_clean_citations(
+            response_dict["parsed_response"], set(paper_keys)
+        )
+        return cleaned_latex
 
     def _generate_key(self, authors_raw, year, title):
         if not authors_raw:
@@ -597,22 +638,7 @@ class HybridLiteratureAgent:
                 suffix = chr(ord(suffix) + 1)
             p.citation_key = unique_key
             seen_keys.add(unique_key)
-
-            author_str = " and ".join(p.authors) if p.authors else "Unknown"
-            entry_type = "article" if p.journal else "inproceedings"
-
-            entry = f"@{entry_type}{{{p.citation_key},\n  title={{{p.title}}},\n  author={{{author_str}}},\n"
-            if p.journal:
-                entry += f"  journal={{{p.journal}}},\n"
-            else:
-                entry += f"  booktitle={{{p.venue}}},\n"
-            entry += f"  year={{{p.year}}}"
-            if p.volume:
-                entry += f",\n  volume={{{p.volume}}}"
-            if p.pages:
-                entry += f",\n  pages={{{p.pages}}}"
-            entry += "\n}"
-            entries.append(entry)
+            entries.append(format_bibtex_entry(p.model_dump()))
         return "\n\n".join(entries)
 
     def _generate_citation_map(self, papers: List[PaperData]) -> Dict[str, Dict]:
@@ -624,6 +650,13 @@ class HybridLiteratureAgent:
                 "venue": p.venue,
                 "year": p.year,
                 "abstract": p.abstract.strip(),
+                "source_type": p.source_type,
+                "doi": p.doi,
+                "arxiv_id": p.arxiv_id,
+                "rfc_number": p.rfc_number,
+                "isbn": p.isbn,
+                "url": p.url,
+                "verification_source": p.verification_source,
             }
             for p in papers
             if p.abstract

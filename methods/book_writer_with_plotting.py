@@ -53,6 +53,7 @@ def write_single_book(
     plotting_max_critic_rounds: int = 3,
     target_audience: str = "Senior Software & Systems Engineers",
     book_style: str = "Practical Architecture & Production Engineering",
+    max_reflections: int = 3,
 ):
     latex_writeup_dir = osp.join(base_dir, "latex_writeup")
     pdf_file = osp.join(base_dir, "final_book.pdf")
@@ -256,7 +257,7 @@ def write_single_book(
                 citation_map_path=citation_map_path,
                 guidelines_path=guidelines_path,
                 model_name=reflection_model_name,
-                max_reflections=3,
+                max_reflections=max_reflections,
                 work_dir=content_refinement_workdir,
             )
             refined_pdf_path = content_refinement_agent.run(

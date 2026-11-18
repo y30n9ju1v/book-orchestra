@@ -77,7 +77,19 @@ from utils.diagram_plot_utils import (
     execute_plot_code_worker,
     _minimal_png_base64,
 )
-from utils.pdf_utils import compile_latex, latex_to_markdown, load_book
+from utils.pdf_utils import (
+    compile_latex,
+    latex_to_markdown,
+    load_book,
+    pdf_to_grid_images,
+    inspect_book_layout_issues,
+)
+from utils.reference_verifier import (
+    is_reference_before_cutoff,
+    has_verifiable_identifier_or_grounding,
+    format_bibtex_entry,
+    audit_and_clean_citations,
+)
 
 
 OUTLINE_SCHEMA = {
@@ -104,6 +116,13 @@ CANDIDATES_SCHEMA = {
                     "year": {"type": "integer"},
                     "authors": {"type": "array", "items": {"type": "string"}},
                     "venue": {"type": "string"},
+                    "source_type": {"type": "string"},
+                    "doi": {"type": "string"},
+                    "arxiv_id": {"type": "string"},
+                    "rfc_number": {"type": "string"},
+                    "isbn": {"type": "string"},
+                    "url": {"type": "string"},
+                    "publication_date": {"type": "string"},
                     "summary": {"type": "string"},
                     "reason": {"type": "string"},
                 },
@@ -241,6 +260,8 @@ def _collect_search_tasks(outline: dict) -> list[dict]:
 
 def _export_modular_chapters(latex_text: str, output_dir: str) -> list[str]:
     chapters_dir = os.path.join(output_dir, "chapters")
+    if os.path.exists(chapters_dir):
+        shutil.rmtree(chapters_dir, ignore_errors=True)
     os.makedirs(chapters_dir, exist_ok=True)
     exported = []
     matches = list(re.finditer(r"\\chapter\*?\{([^}]+)\}", latex_text))
@@ -256,6 +277,32 @@ def _export_modular_chapters(latex_text: str, output_dir: str) -> list[str]:
             f.write(chunk + "\n")
         exported.append(cpath)
     return exported
+
+
+def _update_continuity_ledger(
+    continuity_ledger: dict, latex_text: str, exported_chapters: list[str]
+) -> dict:
+    continuity_ledger["defined_labels"] = sorted(
+        set(re.findall(r"\\label\{([^}]+)\}", latex_text))
+    )
+    continuity_ledger["authored_chapters"] = re.findall(
+        r"\\chapter\*?\{([^}]+)\}", latex_text
+    )
+    continuity_ledger["code_listings"] = re.findall(
+        r"caption\s*=\s*\{([^}]+)\}", latex_text
+    )
+    continuity_ledger["cited_keys"] = sorted(
+        set(
+            k.strip()
+            for m in re.findall(r"\\(?:cite|citet|citep)(?:\[[^\]]*\])?\{([^}]+)\}", latex_text)
+            for k in m.split(",")
+            if k.strip()
+        )
+    )
+    continuity_ledger["exported_chapter_files"] = [
+        os.path.basename(p) for p in exported_chapters
+    ]
+    return continuity_ledger
 
 
 async def run_book_orchestra_workflow(
@@ -290,7 +337,12 @@ async def run_book_orchestra_workflow(
     research_cutoff = workflow_args.get(
         "research_cutoff", datetime.datetime.now().strftime("%Y-%m")
     )
-    model_tier = workflow_args.get("model", "inherit")
+    model_tier = workflow_args.get(
+        "writer_model_name", workflow_args.get("model", "inherit")
+    )
+    reflection_model_tier = workflow_args.get("reflection_model_name", model_tier)
+    plotting_model_tier = workflow_args.get("plotting_model_name", model_tier)
+    image_model_name = workflow_args.get("image_model_name", "image-generator")
 
     raw_materials_dir = (
         raw_materials_rel
@@ -390,10 +442,12 @@ async def run_book_orchestra_workflow(
     def _make_search_agent(task):
         t_prompt = (
             f"Find authoritative technical references (foundational systems papers, RFCs, "
-            f"official engineering specifications, or classic books) published before {research_cutoff}.\n"
+            f"official engineering specifications, or classic books) published on or before {research_cutoff}.\n"
             f"Section: {task['section']}\n"
             f"Search Focus: {task['focus']}\n"
             f"Context: {task['context']}\n"
+            f"CRITICAL: Include verifiable identifiers (doi, arxiv_id, rfc_number, isbn, or official url) "
+            f"and source_type ('paper', 'book', 'rfc', 'standard', 'techreport'). "
             f"Return 1 exact canonical reference if targeted, or 3-5 top references if exploration."
         )
         return agent_fn(
@@ -410,12 +464,25 @@ async def run_book_orchestra_workflow(
         discovery_results = []
 
     registry = {}
+    grounding_notes_blob = f"{proposal_text}\n{notes_text}"
     for task, res in zip(search_tasks, discovery_results):
         if isinstance(res, str):
             res = parse_gemini_json_results(res) or {}
+        task_grounding = f"{grounding_notes_blob}\n{task.get('focus', '')}\n{task.get('context', '')}"
         for cand in (res or {}).get("candidates", []):
             title = cand.get("title", "").strip()
             if not title:
+                continue
+            if not is_reference_before_cutoff(cand, research_cutoff):
+                log_fn(
+                    f"Skipping reference after cutoff ({research_cutoff}): {title} ({cand.get('year')})"
+                )
+                continue
+            is_verified, ver_src = has_verifiable_identifier_or_grounding(
+                cand, grounding_text=task_grounding
+            )
+            if not is_verified:
+                log_fn(f"Skipping unverified reference (no DOI/URL/RFC/ISBN or grounding): {title}")
                 continue
             norm = re.sub(r"[^a-z0-9]", "", title.lower())
             if norm in registry:
@@ -432,10 +499,17 @@ async def run_book_orchestra_workflow(
                 "abstract": cand.get("summary") or cand.get("reason") or title,
                 "found_in_section": task["section"],
                 "reason": cand.get("reason", ""),
+                "source_type": cand.get("source_type"),
+                "doi": cand.get("doi"),
+                "arxiv_id": cand.get("arxiv_id"),
+                "rfc_number": cand.get("rfc_number"),
+                "isbn": cand.get("isbn"),
+                "url": cand.get("url"),
+                "verification_source": ver_src,
             }
 
     papers_list = list(registry.values())
-    # Deduplicate citation keys & build BibTeX + citation_map
+    # Deduplicate citation keys & build properly typed BibTeX + citation_map
     seen_keys = set()
     bib_entries = []
     citation_map = {}
@@ -449,10 +523,7 @@ async def run_book_orchestra_workflow(
             sfx = chr(ord(sfx) + 1)
         p["citation_key"] = ukey
         seen_keys.add(ukey)
-        author_str = " and ".join(p["authors"])
-        bib_entries.append(
-            f"@inproceedings{{{ukey},\n  title={{{p['title']}}},\n  author={{{author_str}}},\n  booktitle={{{p['venue']}}},\n  year={{{p['year']}}}\n}}"
-        )
+        bib_entries.append(format_bibtex_entry(p))
         citation_map[ukey] = {
             "citation_key": ukey,
             "title": p["title"],
@@ -460,6 +531,13 @@ async def run_book_orchestra_workflow(
             "venue": p["venue"],
             "year": p["year"],
             "abstract": p["abstract"],
+            "source_type": p.get("source_type"),
+            "doi": p.get("doi"),
+            "arxiv_id": p.get("arxiv_id"),
+            "rfc_number": p.get("rfc_number"),
+            "isbn": p.get("isbn"),
+            "url": p.get("url"),
+            "verification_source": p.get("verification_source"),
         }
         sec = p["found_in_section"]
         section_to_keys.setdefault(sec, []).append(ukey)
@@ -522,6 +600,10 @@ async def run_book_orchestra_workflow(
         model=model_tier,
     )
     updated_template_tex = parse_gemini_latex_results(str(lit_latex_raw))
+    if citation_map:
+        updated_template_tex, _ = audit_and_clean_citations(
+            updated_template_tex, set(citation_map.keys())
+        )
     with open(
         os.path.join(lit_output_dir, "updated_template.tex"), "w", encoding="utf-8"
     ) as f:
@@ -562,7 +644,7 @@ async def run_book_orchestra_workflow(
                     prompt=code_prompt,
                     schema={"type": "string"},
                     role=f"Benchmark Plotter: {fig_id}",
-                    model=model_tier,
+                    model=plotting_model_tier,
                 )
                 b64_img = execute_plot_code_worker(str(code_resp)) or _minimal_png_base64()
                 with open(img_abs, "wb") as fh:
@@ -580,7 +662,7 @@ async def run_book_orchestra_workflow(
                         prompt=diag_prompt,
                         schema={"type": "string"},
                         role=f"Architecture Illustrator: {fig_id}",
-                        type_name="image-generator",
+                        type_name=image_model_name,
                     )
                     # If image-generator returned a valid local file path, copy it; otherwise write fallback PNG
                     cand_path = str(diag_resp).strip()
@@ -665,20 +747,16 @@ async def run_book_orchestra_workflow(
         model=model_tier,
     )
     current_tex = parse_gemini_latex_results(str(draft_latex_raw))
+    if citation_map:
+        current_tex, _ = audit_and_clean_citations(
+            current_tex, set(citation_map.keys())
+        )
     raw_draft_tex_path = os.path.join(latex_writeup_dir, "raw_draft_book.tex")
     with open(raw_draft_tex_path, "w", encoding="utf-8") as f:
         f.write(current_tex)
 
     exported_chapters = _export_modular_chapters(current_tex, latex_writeup_dir)
-    continuity_ledger["defined_labels"] = sorted(
-        set(re.findall(r"\\label\{([^}]+)\}", current_tex))
-    )
-    continuity_ledger["authored_chapters"] = re.findall(
-        r"\\chapter\*?\{([^}]+)\}", current_tex
-    )
-    continuity_ledger["exported_chapter_files"] = [
-        os.path.basename(p) for p in exported_chapters
-    ]
+    _update_continuity_ledger(continuity_ledger, current_tex, exported_chapters)
     with open(
         os.path.join(base_dir, "book_continuity_ledger.json"), "w", encoding="utf-8"
     ) as f:
@@ -701,7 +779,13 @@ async def run_book_orchestra_workflow(
     initial_pdf_path = os.path.join(refinement_workdir, "initial_draft.pdf")
     with open(initial_tex_path, "w", encoding="utf-8") as f:
         f.write(current_tex)
-    compile_latex(refinement_workdir, initial_pdf_path, "initial_draft")
+    initial_compiled = compile_latex(
+        refinement_workdir, initial_pdf_path, "initial_draft"
+    )
+    if not initial_compiled or not os.path.exists(initial_pdf_path):
+        raise RuntimeError(
+            f"Initial LaTeX book manuscript failed syntax validation or compilation: {initial_tex_path}"
+        )
     final_valid_pdf_path = initial_pdf_path
 
     async def _run_editorial_review_board(pdf_path: str, label: str) -> tuple[dict, float]:
@@ -723,7 +807,7 @@ async def run_book_orchestra_workflow(
                 prompt=r_prompt,
                 schema=REVIEW_SCHEMA,
                 role=f"Review Board ({label}): {persona_id}",
-                model=model_tier,
+                model=reflection_model_tier,
             )
 
         raw_reviews = await parallel_fn(REVIEW_BOARD_PERSONAS, _spawn_persona_reviewer)
@@ -747,7 +831,7 @@ async def run_book_orchestra_workflow(
             prompt=meta_prompt,
             schema=REVIEW_SCHEMA,
             role=f"Editor-in-Chief Meta-Review ({label})",
-            model=model_tier,
+            model=reflection_model_tier,
         )
         if isinstance(meta_raw, str):
             meta_raw = parse_gemini_json_results(meta_raw) or parsed_reviews[0]
@@ -783,21 +867,24 @@ async def run_book_orchestra_workflow(
             prompt=rev_prompt,
             schema=REVISION_SCHEMA,
             role=f"Editorial Revision ({v_label})",
-            model=model_tier,
+            model=reflection_model_tier,
         )
         if isinstance(rev_res, str):
             rev_res = parse_gemini_json_results(rev_res) or {}
         new_tex = parse_gemini_latex_results(str(rev_res.get("latex", "")))
         if not new_tex:
             break
+        if citation_map:
+            new_tex, _ = audit_and_clean_citations(new_tex, set(citation_map.keys()))
 
         cur_name = f"refined_book_{v_label}"
         cur_tex_path = os.path.join(refinement_workdir, f"{cur_name}.tex")
         cur_pdf_path = os.path.join(refinement_workdir, f"{cur_name}.pdf")
         with open(cur_tex_path, "w", encoding="utf-8") as f:
             f.write(new_tex)
-        compile_latex(refinement_workdir, cur_pdf_path, cur_name)
-        if not os.path.exists(cur_pdf_path):
+        compiled_ok = compile_latex(refinement_workdir, cur_pdf_path, cur_name)
+        if not compiled_ok or not os.path.exists(cur_pdf_path):
+            log_fn(f"Revision {v_label} failed LaTeX validation/compilation; reverting.")
             continue
 
         new_review, new_score = await _run_editorial_review_board(
@@ -836,9 +923,19 @@ async def run_book_orchestra_workflow(
     ) as f:
         json.dump(worklogs, f, indent=4, ensure_ascii=False)
 
-    # Production Typesetting QA pass
+    # Production Typesetting QA pass (combines rendered PDF page snapshots + static layout diagnostics)
+    fmt_screenshots_dir = os.path.join(
+        refinement_workdir, "pdf_screenshots", "format_refinement", "v0"
+    )
+    grid_images = pdf_to_grid_images(final_valid_pdf_path, fmt_screenshots_dir)
+    layout_diagnostics = inspect_book_layout_issues(
+        current_tex, cwd=refinement_workdir
+    )
+
     fmt_prompt = (
         f"{format_agent_system_prompt}\n\n"
+        f"Rendered Page Snapshots for Visual Inspection: {grid_images}\n"
+        f"Automated Layout & Overflow Diagnostics:\n{json.dumps(layout_diagnostics, indent=2, ensure_ascii=False)}\n\n"
         f"Verify code listings (breaklines=true, <=88 chars/line), booktabs table widths, "
         f"callout boxes, figure paths (figures/ prefix), and citation keys.\n\n"
         f"Publisher Guidelines:\n{guidelines_text}\n\n"
@@ -849,20 +946,40 @@ async def run_book_orchestra_workflow(
         prompt=fmt_prompt,
         schema={"type": "string"},
         role="Production Typesetting QA Editor",
-        model=model_tier,
+        model=reflection_model_tier,
     )
     polished_tex = parse_gemini_latex_results(str(fmt_raw)) or current_tex
-    if r"\documentclass" in polished_tex and r"\end{document}" in polished_tex:
-        current_tex = polished_tex
+    if citation_map:
+        polished_tex, _ = audit_and_clean_citations(
+            polished_tex, set(citation_map.keys())
+        )
 
-    # Save final artifacts
+    # Validate & compile the polished candidate before accepting it
+    candidate_fmt_tex = os.path.join(refinement_workdir, "formatted_candidate_v1.tex")
+    candidate_fmt_pdf = os.path.join(refinement_workdir, "formatted_candidate_v1.pdf")
+    with open(candidate_fmt_tex, "w", encoding="utf-8") as f:
+        f.write(polished_tex)
+    if compile_latex(refinement_workdir, candidate_fmt_pdf, "formatted_candidate_v1"):
+        current_tex = polished_tex
+        final_valid_pdf_path = candidate_fmt_pdf
+    else:
+        log_fn(
+            "Typesetting QA candidate failed LaTeX compilation; keeping last valid manuscript."
+        )
+
+    # Save final artifacts and ensure base_dir is 100% self-contained
     final_refined_tex = os.path.join(refinement_workdir, "final_refined_book.tex")
     final_refined_pdf = os.path.join(refinement_workdir, "final_refined_book.pdf")
     with open(final_refined_tex, "w", encoding="utf-8") as f:
         f.write(current_tex)
-    compile_latex(refinement_workdir, final_refined_pdf, "final_refined_book")
-    if not os.path.exists(final_refined_pdf) and os.path.exists(final_valid_pdf_path):
-        shutil.copy(final_valid_pdf_path, final_refined_pdf)
+    final_compiled = compile_latex(
+        refinement_workdir, final_refined_pdf, "final_refined_book"
+    )
+    if not final_compiled or not os.path.exists(final_refined_pdf):
+        if os.path.exists(final_valid_pdf_path):
+            shutil.copy(final_valid_pdf_path, final_refined_pdf)
+        else:
+            raise RuntimeError("Final book manuscript failed LaTeX compilation.")
 
     final_book_pdf = os.path.join(base_dir, "final_book.pdf")
     final_book_tex = os.path.join(base_dir, "final_book.tex")
@@ -873,11 +990,26 @@ async def run_book_orchestra_workflow(
         f.write(current_tex)
     shutil.copy(final_book_tex, os.path.join(latex_writeup_dir, "main.tex"))
 
+    # Copy references.bib and figures/ into base_dir so final_book.tex compiles standalone in base_dir
+    src_bib = os.path.join(latex_writeup_dir, "references.bib")
+    if os.path.exists(src_bib):
+        shutil.copy(src_bib, os.path.join(base_dir, "references.bib"))
+    src_figs = os.path.join(latex_writeup_dir, "figures")
+    dst_figs = os.path.join(base_dir, "figures")
+    if os.path.exists(src_figs) and os.path.abspath(src_figs) != os.path.abspath(dst_figs):
+        shutil.copytree(src_figs, dst_figs, dirs_exist_ok=True)
+
     md_content = latex_to_markdown(current_tex)
     with open(final_book_md, "w", encoding="utf-8") as f:
         f.write(md_content)
 
+    # Re-export modular chapters from final refined manuscript and update continuity ledger
     final_chapters = _export_modular_chapters(current_tex, latex_writeup_dir)
+    _update_continuity_ledger(continuity_ledger, current_tex, final_chapters)
+    with open(
+        os.path.join(base_dir, "book_continuity_ledger.json"), "w", encoding="utf-8"
+    ) as f:
+        json.dump(continuity_ledger, f, indent=4, ensure_ascii=False)
     log_fn(
         f"✅ BookOrchestra complete! Final Score: {current_score}/10 | "
         f"PDF: {final_book_pdf} | Markdown: {final_book_md} | Chapters: {len(final_chapters)}"

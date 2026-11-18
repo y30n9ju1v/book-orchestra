@@ -17,7 +17,13 @@ import traceback
 import json
 import shutil
 
-from utils.pdf_utils import compile_latex, load_book, pdf_to_grid_images
+from utils.pdf_utils import (
+    compile_latex,
+    load_book,
+    pdf_to_grid_images,
+    inspect_book_layout_issues,
+)
+from utils.reference_verifier import audit_and_clean_citations
 from utils.gemini_utils import (
     call_gemini_with_contents,
     parse_gemini_json_latex_response,
@@ -171,12 +177,27 @@ Respond in JSON format with the following structure:
             )
 
             formatting_review = response_dict["parsed_response"]
+            if not isinstance(formatting_review, dict):
+                formatting_review = {}
+
+            static_layout = inspect_book_layout_issues(
+                self.current_tex, cwd=self.work_dir
+            )
+            merged_fig_tabs = dict(static_layout.get("figure_and_tables", {}))
+            if isinstance(formatting_review.get("figure_and_tables"), dict):
+                merged_fig_tabs.update(formatting_review["figure_and_tables"])
+            formatting_review["figure_and_tables"] = merged_fig_tabs
+
+            merged_other = list(static_layout.get("other_issues", []))
+            if isinstance(formatting_review.get("other_issues"), list):
+                merged_other.extend(formatting_review["other_issues"])
+            formatting_review["other_issues"] = merged_other
 
             return formatting_review
         except Exception as e:
             print(f" >> [VLM] Error generating formatting review: {e}")
             traceback.print_exc()
-            return {"Error": str(e)}
+            return inspect_book_layout_issues(self.current_tex, cwd=self.work_dir)
 
     def _extract_scores(self, review: dict) -> dict:
         """Extracts numerical scores from both book-native and legacy review axes."""
@@ -236,12 +257,12 @@ Respond in JSON format with the following structure:
         ) as f:
             f.write(self.current_tex)
 
-        compile_latex(self.work_dir, initial_pdf_path, "initial_draft")
+        compiled_ok = compile_latex(self.work_dir, initial_pdf_path, "initial_draft")
+        if not compiled_ok or not os.path.exists(initial_pdf_path):
+            raise RuntimeError(
+                f"Initial LaTeX draft failed syntax validation or compilation at '{initial_pdf_path}'."
+            )
         print(f" >> Initial PDF saved to {initial_pdf_path}")
-
-        if not os.path.exists(initial_pdf_path):
-            print(" >> Error: Initial PDF failed to compile. Cannot review.")
-            return f" >> Error: Initial PDF '{initial_pdf_path}' failed to compile. Cannot review."
 
         v0_screenshots_dir = os.path.join(
             self.work_dir, "pdf_screenshots", "content_refinement", "v0"

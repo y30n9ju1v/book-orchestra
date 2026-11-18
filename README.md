@@ -13,20 +13,20 @@
 
 ### 핵심 특징
 1. **외부 API 키 불필요 — Antigravity `run_workflow` 네이티브 실행**
-   - [workflows/book_orchestra_workflow.py](file:///Users/yeongjun/Develops/book-orchestra/workflows/book_orchestra_workflow.py) 및 [methods/agy_workflow_runner.py](file:///Users/yeongjun/Develops/book-orchestra/methods/agy_workflow_runner.py): Antigravity의 `agent()`, `parallel()`, `pipeline()`, `phase()` 프리미티브를 사용해 현재 로그인된 Antigravity 세션 모델과 내장 도구(`research` 웹 검색, `image-generator` 다이어그램 생성)만으로 전체 집필·검수·조판 파이프라인을 실행합니다.
-   - 워크스페이스 스킬 [.agents/skills/book-orchestra/SKILL.md](file:///Users/yeongjun/Develops/book-orchestra/.agents/skills/book-orchestra/SKILL.md)가 등록되어 있어, Antigravity 채팅창에서 바로 기술 서적 집필을 요청하면 자동으로 `run_workflow`를 호출합니다.
-   - [utils/gemini_utils.py](file:///Users/yeongjun/Develops/book-orchestra/utils/gemini_utils.py): 외부 REST API 클라이언트(`google.genai`, `openai`)를 제거하고 Antigravity 에이전트 브리지(`set_antigravity_agent_runner`)로 대체했습니다.
+   - [`workflows/book_orchestra_workflow.py`](workflows/book_orchestra_workflow.py) 및 [`methods/agy_workflow_runner.py`](methods/agy_workflow_runner.py): Antigravity의 `agent()`, `parallel()`, `pipeline()`, `phase()` 프리미티브를 사용해 현재 로그인된 Antigravity 세션 모델과 내장 도구(`research` 웹 검색, `image-generator` 다이어그램 생성)만으로 전체 집필·검수·조판 파이프라인을 실행합니다.
+   - 워크스페이스 스킬 [`.agents/skills/book-orchestra/SKILL.md`](.agents/skills/book-orchestra/SKILL.md)가 등록되어 있어, Antigravity 채팅창에서 바로 기술 서적 집필을 요청하면 자동으로 `run_workflow`를 호출합니다.
+   - [`utils/gemini_utils.py`](utils/gemini_utils.py): 외부 REST API 클라이언트(`google.genai`, `openai`)를 제거하고 Antigravity 에이전트 브리지(`set_antigravity_agent_runner`, `enable_agy_cli_runner`)로 대체했습니다.
 2. **이중 블라인드 논문 제약 제거 → 엔지니어링 & 출판 무결성(`TECHNICAL_BOOK_INTEGRITY_PROMPT`) 적용**
-   - [utils/prompt_utils.py](file:///Users/yeongjun/Develops/book-orchestra/utils/prompt_utils.py): 익명성·8페이지 학회 제한 대신 **벤치마크/성능 수치의 원천 데이터 근거(Grounding)**, **실행 가능하고 에러 처리가 포함된 프로덕션 코드 작성**, **과장 없는 트레이드오프 및 장애 모드 분석**을 강제합니다.
+   - [`utils/prompt_utils.py`](utils/prompt_utils.py): 익명성·8페이지 학회 제한 대신 **벤치마크/성능 수치의 원천 데이터 근거(Grounding)**, **실행 가능하고 에러 처리가 포함된 프로덕션 코드 작성**, **과장 없는 트레이드오프 및 장애 모드 분석**을 강제합니다.
 3. **전문 출판사 기반 Book Templates (`templates/`)**
-   - [templates/oreilly_style_book/](file:///Users/yeongjun/Develops/book-orchestra/templates/oreilly_style_book/template.tex): O'Reilly 스타일 실무 아키텍처 & 엔지니어링 가이드 (`\part`, `\chapter`, 코드 하이라이팅, 학습 목표·팁·경고·함정·아키텍처 트레이드오프·연습문제 박스 완비)
-   - [templates/manning_in_action_book/](file:///Users/yeongjun/Develops/book-orchestra/templates/manning_in_action_book/template.tex): Manning "In Action" 스타일 프로젝트·코드 중심 점진적 구현 서적
-   - [templates/systems_handbook/](file:///Users/yeongjun/Develops/book-orchestra/templates/systems_handbook/template.tex): Addison-Wesley / DDIA / Google SRE 스타일 Staff/Principal 엔지니어용 시스템 핸드북
+   - [`templates/oreilly_style_book/`](templates/oreilly_style_book/template.tex): O'Reilly 스타일 실무 아키텍처 & 엔지니어링 가이드 (`\part`, `\chapter`, 코드 하이라이팅, 학습 목표·팁·경고·함정·아키텍처 트레이드오프·연습문제 박스 완비)
+   - [`templates/manning_in_action_book/`](templates/manning_in_action_book/template.tex): Manning "In Action" 스타일 프로젝트·코드 중심 점진적 구현 서적
+   - [`templates/systems_handbook/`](templates/systems_handbook/template.tex): Addison-Wesley / DDIA / Google SRE 스타일 Staff/Principal 엔지니어용 시스템 핸드북
 4. **4단계 `run_workflow` 멀티 에이전트 파이프라인**
    - **Phase 1 (`1. Book Blueprint & Architecture Plan`)**: `Book Blueprint Architect` 에이전트가 `book_metadata`, `terminology_glossary`, `plotting_plan`, `chapter_plan` 생성 (`outline.json`)
-   - **Phase 2 (`2. Technical Ecosystem Research & Architecture Visuals`)**: `parallel()`로 `research` 에이전트들이 레퍼런스(`references.bib`, `citation_map.json`)를 병렬 수집해 Preface 및 1장 집필 + `image-generator` 및 `matplotlib` 플로터가 아키텍처 다이어그램/벤치마크 차트 병렬 생성
+   - **Phase 2 (`2. Technical Ecosystem Research & Architecture Visuals`)**: `parallel()`로 `research` 에이전트들이 검증 식별자(DOI, arXiv ID, RFC, ISBN, URL)와 cutoff 날짜를 검증한 레퍼런스(`references.bib`, `citation_map.json`)를 병렬 수집해 Preface 및 1장 집필 + `image-generator` 및 AST/프로세스 샌드박스 격리된 `matplotlib` 플로터가 아키텍처 다이어그램/벤치마크 차트 병렬 생성
    - **Phase 3 (`3. Multi-Chapter Authoring & Continuity Ledger`)**: `book_continuity_ledger.json`으로 용어·라벨 일관성을 유지하며 전체 챕터 집필 및 모듈별 파일(`latex_writeup/chapters/chXX_*.tex`) 분할 저장
-   - **Phase 4 (`4. 3-Persona Editorial Review Board & Typesetting QA`)**: `parallel()`로 **Principal Systems Engineer**, **Executive Developmental Editor**, **Production & Copy Editor** 3인 편집위원회가 동시 감수 → Editor-in-Chief 메타 리뷰 및 원고 개선 → 조판 QA 후 `final_book.pdf`, `final_book.tex`, `final_book.md` 생성
+   - **Phase 4 (`4. 3-Persona Editorial Review Board & Typesetting QA`)**: `parallel()`로 **Principal Systems Engineer**, **Executive Developmental Editor**, **Production & Copy Editor** 3인 편집위원회가 동시 감수 → Editor-in-Chief 메타 리뷰 및 원고 개선 → 렌더링된 페이지 스냅샷 및 정적 레이아웃 진단 기반 조판 QA 후 `final_book.pdf`, `final_book.tex`, `references.bib`, `figures/`, `final_book.md` 생성
 
 ---
 
@@ -37,7 +37,7 @@ Ask Antigravity in chat:
 > *"Run BookOrchestra workflow on `examples/distributed_llm_systems_book/raw_materials` with the `oreilly_style_book` template."*
 
 Or invoke `run_workflow` with:
-- **`ScriptPath`**: `/Users/yeongjun/Develops/book-orchestra/workflows/book_orchestra_workflow.py`
+- **`ScriptPath`**: `workflows/book_orchestra_workflow.py`
 - **`Args`**:
   ```json
   {

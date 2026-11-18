@@ -16,13 +16,19 @@
 Technical Book Architecture Diagram & Benchmark Plot Utilities for BookOrchestra.
 """
 
+import ast
 import base64
 import io
+import os
 import re
 import json
 import struct
+import subprocess
+import sys
+import tempfile
+import textwrap
 import zlib
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 
 try:
     import matplotlib.pyplot as plt  # type: ignore
@@ -161,29 +167,252 @@ def _minimal_png_base64(width: int = 120, height: int = 80) -> str:
     return base64.b64encode(png_bytes).decode("utf-8")
 
 
-def execute_plot_code_worker(code_text: str) -> str:
+ALLOWED_PLOT_MODULES: Set[str] = {
+    "matplotlib",
+    "matplotlib.pyplot",
+    "matplotlib.patches",
+    "matplotlib.ticker",
+    "matplotlib.cm",
+    "matplotlib.colors",
+    "matplotlib.lines",
+    "matplotlib.gridspec",
+    "matplotlib.patheffects",
+    "numpy",
+    "math",
+    "statistics",
+    "collections",
+    "itertools",
+    "functools",
+    "dataclasses",
+    "typing",
+    "decimal",
+    "fractions",
+}
+
+FORBIDDEN_PLOT_NAMES: Set[str] = {
+    "eval",
+    "exec",
+    "compile",
+    "open",
+    "__import__",
+    "getattr",
+    "setattr",
+    "delattr",
+    "globals",
+    "locals",
+    "vars",
+    "breakpoint",
+    "input",
+    "os",
+    "sys",
+    "subprocess",
+    "shutil",
+    "socket",
+    "urllib",
+    "requests",
+    "http",
+    "pathlib",
+    "ctypes",
+    "pickle",
+    "builtins",
+    "importlib",
+    "inspect",
+}
+
+
+class UnsafePlotCodeError(ValueError):
+    """Raised when LLM-generated plot code violates the AST security policy."""
+
+
+def validate_plot_code_ast(code_clean: str) -> ast.AST:
+    """
+    Statically validates LLM-generated matplotlib code before execution.
+    Rejects non-allowlisted imports, dangerous builtins, file/network access, and dunder traversal.
+    """
+    if not code_clean or not code_clean.strip():
+        raise UnsafePlotCodeError("Empty plot code.")
+
+    try:
+        tree = ast.parse(code_clean, mode="exec")
+    except SyntaxError as e:
+        raise UnsafePlotCodeError(f"SyntaxError in plot code: {e}") from e
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                mod = alias.name.strip()
+                if mod not in ALLOWED_PLOT_MODULES:
+                    raise UnsafePlotCodeError(
+                        f"Disallowed import '{mod}' in plot code."
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0:
+                raise UnsafePlotCodeError("Relative imports are disallowed in plot code.")
+            mod = (node.module or "").strip()
+            if mod not in ALLOWED_PLOT_MODULES:
+                raise UnsafePlotCodeError(
+                    f"Disallowed import from '{mod}' in plot code."
+                )
+            for alias in node.names:
+                if alias.name == "*" or alias.name.startswith("__"):
+                    raise UnsafePlotCodeError(
+                        f"Disallowed symbol import '{alias.name}' in plot code."
+                    )
+        elif isinstance(node, ast.Name):
+            if node.id in FORBIDDEN_PLOT_NAMES or node.id.startswith("__"):
+                raise UnsafePlotCodeError(
+                    f"Disallowed identifier '{node.id}' in plot code."
+                )
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") or node.attr in {
+                "system",
+                "popen",
+                "spawn",
+                "fork",
+                "kill",
+                "remove",
+                "unlink",
+                "rmdir",
+                "rmtree",
+                "listdir",
+                "walk",
+                "environ",
+                "modules",
+                "savefig",
+            }:
+                raise UnsafePlotCodeError(
+                    f"Disallowed attribute access '.{node.attr}' in plot code."
+                )
+
+    return tree
+
+
+def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
+    """
+    Sandboxed plot code execution worker:
+    1. Extracts Python code and validates its AST against strict allowlists.
+    2. Runs the code in an isolated child process (`python -I`) inside a temporary directory
+       with resource limits and restricted builtins.
+    3. Reads the rendered JPEG image and returns its Base64 string (or None on error/violation).
+    """
+    match = re.search(r"```python(.*?)```", code_text or "", re.DOTALL)
+    code_clean = match.group(1).strip() if match else (code_text or "").strip()
+
+    try:
+        validate_plot_code_ast(code_clean)
+    except UnsafePlotCodeError as e:
+        print(f"Security/AST check rejected plot code: {e}")
+        return None
+
     if plt is None:
         return _minimal_png_base64()
 
-    match = re.search(r"```python(.*?)```", code_text, re.DOTALL)
-    code_clean = match.group(1).strip() if match else code_text.strip()
+    runner_source = textwrap.dedent(
+        """
+        import builtins
+        import os
+        import resource
+        import sys
 
-    plt.switch_backend("Agg")
-    plt.close("all")
-    plt.rcdefaults()
+        try:
+            resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+            resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+        except Exception:
+            pass
+
+        code_path = sys.argv[1]
+        out_path = sys.argv[2]
+        with open(code_path, "r", encoding="utf-8") as f:
+            user_code = f.read()
+
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        plt.close("all")
+        plt.rcdefaults()
+
+        # Prevent user code from calling plt.show() or writing arbitrary files via plt.savefig
+        _real_savefig = plt.savefig
+        plt.show = lambda *a, **kw: None
+        plt.savefig = lambda *a, **kw: None
+
+        ALLOWED = {
+            "matplotlib",
+            "matplotlib.pyplot",
+            "matplotlib.patches",
+            "matplotlib.ticker",
+            "matplotlib.cm",
+            "matplotlib.colors",
+            "matplotlib.lines",
+            "matplotlib.gridspec",
+            "matplotlib.patheffects",
+            "numpy",
+            "math",
+            "statistics",
+            "collections",
+            "itertools",
+            "functools",
+            "dataclasses",
+            "typing",
+            "decimal",
+            "fractions",
+        }
+        _real_import = builtins.__import__
+
+        def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if level != 0 or (name not in ALLOWED and name.split(".")[0] not in {"matplotlib", "numpy"}):
+                raise ImportError(f"Import of '{name}' is blocked by plot sandbox.")
+            return _real_import(name, globals, locals, fromlist, level)
+
+        safe_builtins = dict(builtins.__dict__)
+        for bad in ("open", "eval", "exec", "compile", "input", "breakpoint", "getattr", "setattr", "delattr", "globals", "locals", "vars"):
+            safe_builtins.pop(bad, None)
+        safe_builtins["__import__"] = _safe_import
+
+        exec_globals = {"__builtins__": safe_builtins, "__name__": "__main__"}
+        exec(compile(user_code, "<plot_code>", "exec"), exec_globals)
+
+        if plt.get_fignums():
+            _real_savefig(out_path, format="jpeg", bbox_inches="tight", dpi=300)
+            plt.close("all")
+        """
+    )
 
     try:
-        exec_globals = {}
-        exec(code_clean, exec_globals)
-        if plt.get_fignums():
-            buf = io.BytesIO()
-            plt.savefig(buf, format="jpeg", bbox_inches="tight", dpi=300)
-            plt.close("all")
-            buf.seek(0)
-            return base64.b64encode(buf.read()).decode("utf-8")
-        return None
+        with tempfile.TemporaryDirectory(prefix="book_plot_sbx_") as tmpdir:
+            code_file = os.path.join(tmpdir, "plot_script.py")
+            runner_file = os.path.join(tmpdir, "_runner.py")
+            out_img = os.path.join(tmpdir, "output.jpg")
+
+            with open(code_file, "w", encoding="utf-8") as f:
+                f.write(code_clean)
+            with open(runner_file, "w", encoding="utf-8") as f:
+                f.write(runner_source)
+
+            clean_env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "MPLBACKEND": "Agg",
+                "MPLCONFIGDIR": tmpdir,
+                "HOME": tmpdir,
+            }
+
+            proc = subprocess.run(
+                [sys.executable, "-I", runner_file, code_file, out_img],
+                cwd=tmpdir,
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+            )
+            if proc.returncode != 0:
+                print(f"Error executing sandboxed plot code: {proc.stderr.strip()}")
+                return None
+            if os.path.exists(out_img) and os.path.getsize(out_img) > 0:
+                with open(out_img, "rb") as img_f:
+                    return base64.b64encode(img_f.read()).decode("utf-8")
+            return None
     except Exception as e:
-        print(f"Error executing plot code: {e}")
+        print(f"Error executing plot code in sandbox: {e}")
         return None
 
 

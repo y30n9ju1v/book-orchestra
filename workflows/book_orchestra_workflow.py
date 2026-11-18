@@ -18,7 +18,7 @@ Antigravity Native `run_workflow` Entrypoint for BookOrchestra.
 Zero external `GEMINI_API_KEY` or `OPENAI_API_KEY` required.
 Invoke directly with Antigravity's `run_workflow` tool:
   run_workflow(
-      ScriptPath="/Users/yeongjun/Develops/book-orchestra/workflows/book_orchestra_workflow.py",
+      ScriptPath="workflows/book_orchestra_workflow.py",
       Args={
           "raw_materials_dir": "examples/distributed_llm_systems_book/raw_materials",
           "latex_template_dir": "templates/oreilly_style_book",

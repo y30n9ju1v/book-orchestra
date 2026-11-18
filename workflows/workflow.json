@@ -59,6 +59,31 @@
         "type": "string",
         "description": "Antigravity model tier for authoring agents ('inherit', 'pro', 'flash', 'flash_lite').",
         "default": "inherit"
+      },
+      "writer_model_name": {
+        "type": "string",
+        "description": "Antigravity model tier for blueprint, research, and chapter writing agents.",
+        "default": "inherit"
+      },
+      "reflection_model_name": {
+        "type": "string",
+        "description": "Antigravity model tier for the 3-Persona Editorial Review Board and refinement agents.",
+        "default": "inherit"
+      },
+      "plotting_model_name": {
+        "type": "string",
+        "description": "Antigravity model tier for the technical diagram & plotting agent.",
+        "default": "inherit"
+      },
+      "image_model_name": {
+        "type": "string",
+        "description": "Antigravity subagent or model for architecture diagrams.",
+        "default": "image-generator"
+      },
+      "plotting_max_critic_rounds": {
+        "type": "integer",
+        "description": "Maximum rounds of visual QA critic self-correction.",
+        "default": 3
       }
     }
   }

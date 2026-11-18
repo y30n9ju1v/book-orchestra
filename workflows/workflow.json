@@ -1,0 +1,65 @@
+{
+  "name": "book-orchestra",
+  "description": "Multi-agent orchestration workflow for authoring, illustrating, reviewing, and typesetting IT & Engineering books natively in Antigravity without external Gemini API keys.",
+  "entry": "book_orchestra_workflow.py",
+  "args": {
+    "type": "object",
+    "properties": {
+      "raw_materials_dir": {
+        "type": "string",
+        "description": "Directory containing book_proposal.md (or idea_sparse.md) and technical_notes.md (or experimental_log.md).",
+        "default": "examples/distributed_llm_systems_book/raw_materials"
+      },
+      "latex_template_dir": {
+        "type": "string",
+        "description": "Directory containing the target LaTeX book template (e.g., templates/oreilly_style_book, templates/manning_in_action_book, templates/systems_handbook).",
+        "default": "templates/oreilly_style_book"
+      },
+      "output_dir": {
+        "type": "string",
+        "description": "Output directory for the generated book manuscript (PDF, LaTeX, Markdown, modular chapters).",
+        "default": "./book_output_agy"
+      },
+      "proposal_filename": {
+        "type": "string",
+        "description": "Filename of the book proposal inside raw_materials_dir.",
+        "default": "book_proposal.md"
+      },
+      "technical_notes_filename": {
+        "type": "string",
+        "description": "Filename of the technical notes & benchmarks inside raw_materials_dir.",
+        "default": "technical_notes.md"
+      },
+      "target_audience": {
+        "type": "string",
+        "description": "Target engineering reader persona.",
+        "default": "Senior Software & Systems Engineers"
+      },
+      "book_style": {
+        "type": "string",
+        "description": "Pedagogical and editorial book style.",
+        "default": "Practical Architecture & Production Engineering"
+      },
+      "use_plotting": {
+        "type": "boolean",
+        "description": "Whether to generate technical architecture diagrams and benchmark plots in parallel.",
+        "default": true
+      },
+      "max_reflections": {
+        "type": "integer",
+        "description": "Maximum number of 3-Persona Editorial Review Board refinement rounds.",
+        "default": 2
+      },
+      "research_cutoff": {
+        "type": "string",
+        "description": "YYYY-MM cutoff date for technical reference synthesis.",
+        "default": "2026-11"
+      },
+      "model": {
+        "type": "string",
+        "description": "Antigravity model tier for authoring agents ('inherit', 'pro', 'flash', 'flash_lite').",
+        "default": "inherit"
+      }
+    }
+  }
+}

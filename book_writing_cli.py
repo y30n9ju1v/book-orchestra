@@ -66,13 +66,13 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
     )
     parser.add_argument(
         "--writer_model_name",
-        default="gemini-3.1-pro-preview",
-        help="LLM for blueprint, technical research, and chapter writing agents.",
+        default="inherit",
+        help="Antigravity model tier for blueprint, research, and chapter writing agents ('inherit', 'pro', 'flash', 'flash_lite').",
     )
     parser.add_argument(
         "--reflection_model_name",
-        default="gemini-3.1-pro-preview",
-        help="LLM for the 3-Persona Editorial & Technical Review Board and refinement agents.",
+        default="inherit",
+        help="Antigravity model tier for the 3-Persona Editorial Review Board and refinement agents.",
     )
     parser.add_argument(
         "--research_cutoff",
@@ -87,19 +87,24 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
     )
     parser.add_argument(
         "--plotting_model_name",
-        default="gemini-3.1-pro-preview",
-        help="LLM for the technical diagram & plotting agent.",
+        default="inherit",
+        help="Antigravity model tier for the technical diagram & plotting agent.",
     )
     parser.add_argument(
         "--image_model_name",
-        default="gemini-3-pro-image-preview",
-        help="Image generation model for architecture diagrams.",
+        default="image-generator",
+        help="Antigravity subagent or model for architecture diagrams.",
     )
     parser.add_argument(
         "--plotting_max_critic_rounds",
         type=int,
         default=3,
         help="Maximum rounds of visual QA critic self-correction.",
+    )
+    parser.add_argument(
+        "--emit_workflow_only",
+        action="store_true",
+        help="Write the Antigravity run_workflow payload JSON to output_dir and exit.",
     )
     return parser
 
@@ -130,6 +135,41 @@ def main(argv=None):
         if os.path.exists(target_raw_materials):
             shutil.rmtree(target_raw_materials)
         shutil.copytree(args.raw_materials_dir, target_raw_materials)
+
+    import json
+    from utils.gemini_utils import get_antigravity_agent_runner
+
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    workflow_script = os.path.join(repo_root, "workflows", "book_orchestra_workflow.py")
+    workflow_payload = {
+        "ScriptPath": workflow_script,
+        "Cwd": repo_root,
+        "Description": "Run BookOrchestra multi-agent technical book publishing pipeline",
+        "Args": {
+            "raw_materials_dir": args.raw_materials_dir,
+            "latex_template_dir": args.latex_template_dir,
+            "output_dir": base_dir,
+            "proposal_filename": args.proposal_filename,
+            "technical_notes_filename": args.technical_notes_filename,
+            "target_audience": args.target_audience,
+            "book_style": args.book_style,
+            "use_plotting": args.use_plotting,
+            "research_cutoff": args.research_cutoff,
+            "model": args.writer_model_name,
+        },
+    }
+    payload_path = os.path.join(base_dir, "agy_run_workflow_payload.json")
+    with open(payload_path, "w", encoding="utf-8") as f:
+        json.dump(workflow_payload, f, indent=2, ensure_ascii=False)
+
+    if args.emit_workflow_only or get_antigravity_agent_runner() is None:
+        print(
+            f"✅ Antigravity run_workflow payload written to: {payload_path}\n"
+            f"Run inside Antigravity without external API keys using `run_workflow`:\n"
+            f"{json.dumps(workflow_payload, indent=2, ensure_ascii=False)}"
+        )
+        if args.emit_workflow_only:
+            return
 
     if not args.use_plotting:
         has_figures = False

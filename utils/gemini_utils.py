@@ -12,123 +12,86 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Antigravity-native LLM & multimodal bridge for BookOrchestra.
+
+External `google-genai` API calls (`GEMINI_API_KEY` / `VERTEX_AI_PROJECT`) have been
+replaced with an Antigravity workflow agent bridge so BookOrchestra runs natively
+inside Antigravity via `run_workflow` (`workflows/book_orchestra_workflow.py`)
+without external API keys.
+"""
+
 import re
 import json
-from typing import Dict, Any
-
-import time
 import os
-import mimetypes
+import struct
+import zlib
 import base64
-import threading
-
-try:
-    from google import genai
-    from google.genai import types  # type: ignore
-except ImportError:
-    genai = None  # type: ignore
-
-    class _FallbackPart:
-        def __init__(self, text: str = None, data: bytes = None, mime_type: str = None):
-            self.text = text
-            self.data = data
-            self.mime_type = mime_type
-
-        @classmethod
-        def from_text(cls, text: str):
-            return cls(text=text)
-
-        @classmethod
-        def from_bytes(cls, data: bytes, mime_type: str):
-            return cls(data=data, mime_type=mime_type)
-
-    class _FallbackTypes:
-        Part = _FallbackPart
-        Content = Any
-
-        class GoogleSearch:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-        class Tool:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-        class GenerateContentConfig:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-        class ImageConfig:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-    types = _FallbackTypes()  # type: ignore
-
-try:
-    import dotenv
-except ImportError:
-
-    class _DotenvFallback:
-        @staticmethod
-        def load_dotenv(dotenv_path=None):
-            if not dotenv_path or not os.path.exists(dotenv_path):
-                return False
-            with open(dotenv_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-            return True
-
-    dotenv = _DotenvFallback()  # type: ignore
-
-dot_file = os.path.join(os.path.dirname(__file__), "../.env")
-dotenv.load_dotenv(dot_file)
-
-_genai_client = None
-_genai_client_lock = threading.Lock()
+from typing import Dict, Any, Callable, Optional, List
 
 
-def get_genai_client():
-    """Returns a shared Gemini client, creating it on first use.
+class _Part:
+    def __init__(
+        self,
+        text: Optional[str] = None,
+        data: Optional[bytes] = None,
+        mime_type: Optional[str] = None,
+    ):
+        self.text = text
+        self.data = data
+        self.mime_type = mime_type
 
-    The client is created lazily so that Gemini credentials are only required
-    when a Gemini model is actually called (e.g. OpenAI-only setups don't need
-    them). Vertex AI takes precedence over GEMINI_API_KEY when both are set.
-    """
-    if genai is None:
-        raise ImportError(
-            "The 'google-genai' package is required to call Gemini models. "
-            "Install it via `pip install -r requirements.txt`."
-        )
-    global _genai_client
-    if _genai_client is None:
-        with _genai_client_lock:
-            if _genai_client is None:
-                vertex_ai_project = os.getenv("VERTEX_AI_PROJECT")
-                vertex_ai_location = os.getenv("VERTEX_AI_LOCATION")
-                gemini_api_key = os.getenv("GEMINI_API_KEY")
+    @classmethod
+    def from_text(cls, text: str):
+        return cls(text=text)
 
-                if vertex_ai_project and vertex_ai_location:
-                    print(
-                        f"Using Vertex AI configuration. Project: {vertex_ai_project}, Location: {vertex_ai_location}"
-                    )
-                    _genai_client = genai.Client(
-                        vertexai=True,
-                        project=vertex_ai_project,
-                        location=vertex_ai_location,
-                    )
-                elif gemini_api_key:
-                    print("Using Gemini API Key configuration.")
-                    _genai_client = genai.Client(api_key=gemini_api_key)
-                else:
-                    raise ValueError(
-                        "Either VERTEX_AI_PROJECT/VERTEX_AI_LOCATION or GEMINI_API_KEY"
-                        " must be set to use Gemini models."
-                    )
-    return _genai_client
+    @classmethod
+    def from_bytes(cls, data: bytes, mime_type: str):
+        return cls(data=data, mime_type=mime_type)
+
+
+class _TypesNamespace:
+    Part = _Part
+    Content = Any
+
+    class GoogleSearch:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class Tool:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class GenerateContentConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class ImageConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+
+types = _TypesNamespace()
+
+# Optional registered Antigravity agent runner for in-process bridge execution.
+# Signature: runner(prompt: str, system_instruction: Optional[str], model_name: str, images: Optional[List[str]], generation_configs: Optional[dict]) -> str
+_antigravity_agent_runner: Optional[Callable[..., str]] = None
+_antigravity_image_runner: Optional[Callable[..., str]] = None
+
+
+def set_antigravity_agent_runner(
+    runner: Optional[Callable[..., str]],
+    image_runner: Optional[Callable[..., str]] = None,
+):
+    """Registers an Antigravity native agent runner callback."""
+    global _antigravity_agent_runner, _antigravity_image_runner
+    _antigravity_agent_runner = runner
+    if image_runner is not None:
+        _antigravity_image_runner = image_runner
+
+
+def get_antigravity_agent_runner() -> Optional[Callable[..., str]]:
+    return _antigravity_agent_runner
 
 
 def parse_gemini_json_results(response: str):
@@ -174,7 +137,7 @@ def parse_gemini_json_results(response: str):
     except Exception:
         pass
 
-    return None  # No valid JSON found
+    return None
 
 
 def parse_gemini_latex_results(response: str):
@@ -186,18 +149,10 @@ def parse_gemini_latex_results(response: str):
     return latex_string
 
 
-def parse_gemini_json_latex_response(response_text: str) -> Dict[str, Any]:
+def parse_gemini_json_latex_response(response_text: str) -> str:
     """
-    Extracts the JSON worklog and the LaTeX code from the LLM response.
-    Expected format:
-      ... arbitrary text ...
-      ```json
-      { ... }
-      ```
-      ... arbitrary text ...
-      ```latex
-      ...
-      ```
+    Extracts the JSON worklog and the LaTeX code from the agent response.
+    Returns a JSON-serialized string with keys "json" and "latex".
     """
     result = {"json": None, "latex": None}
 
@@ -206,95 +161,94 @@ def parse_gemini_json_latex_response(response_text: str) -> Dict[str, Any]:
         try:
             result["json"] = json.loads(json_match.group(1))
         except json.JSONDecodeError:
-            print(" >> Error: Failed to parse JSON worklog from response.")
             result["json"] = {"error": "Invalid JSON format returned"}
 
     latex_match = re.search(r"```latex\s*(.*?)\s*```", response_text, re.DOTALL)
     if latex_match:
         result["latex"] = latex_match.group(1)
     else:
-        print(" >> Warning: No ```latex``` block found.")
+        result["latex"] = response_text.strip()
 
     return json.dumps(result)
 
 
+def _contents_to_prompt_text(contents: Any) -> str:
+    if isinstance(contents, str):
+        return contents
+    parts_text: List[str] = []
+    if isinstance(contents, (list, tuple)):
+        for item in contents:
+            if isinstance(item, str):
+                parts_text.append(item)
+            elif hasattr(item, "text") and item.text is not None:
+                parts_text.append(str(item.text))
+            elif isinstance(item, dict) and "text" in item:
+                parts_text.append(str(item["text"]))
+            elif hasattr(item, "mime_type") and item.mime_type:
+                parts_text.append(f"[Attached binary part: {item.mime_type}]")
+    else:
+        parts_text.append(str(contents))
+    return "\n\n".join(parts_text)
+
+
 def call_gemini_with_contents(
-    contents: types.Content,
-    model_name: str,
-    max_retries: int = 5,
-    base_interval_sec: int = 5,
-    result_parsing_func: callable = parse_gemini_json_results,
-    generation_configs: dict = {},
+    contents: Any,
+    model_name: str = "inherit",
+    max_retries: int = 3,
+    base_interval_sec: int = 1,
+    result_parsing_func: Callable = parse_gemini_json_results,
+    generation_configs: Optional[dict] = None,
     check_parsed_response_not_none: bool = True,
 ):
     """
-    Calls the Gemini API (text-only) with retry logic and exponential backoff.
+    Routes content generation through the registered Antigravity workflow agent runner
+    (no external google-genai API key required).
     """
+    if generation_configs is None:
+        generation_configs = {}
 
-    raw_response = None
-    parsed_response = None
+    if _antigravity_agent_runner is None:
+        raise RuntimeError(
+            "External Gemini API calls are disabled. Run BookOrchestra natively inside Antigravity "
+            "using the `run_workflow` tool with `ScriptPath='workflows/book_orchestra_workflow.py'`, "
+            "or register an Antigravity runner via `set_antigravity_agent_runner(...)`."
+        )
 
-    genai_client = get_genai_client()
-    for attempt in range(max_retries):
-        try:
-            response = genai_client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(**generation_configs),
-            )
+    prompt_text = _contents_to_prompt_text(contents)
+    system_instruction = generation_configs.get("system_instruction")
 
-            if not response or not hasattr(response, "text") or response.text is None:
-                raise ValueError("Incomplete response from Gemini API or empty text")
+    raw_response = _antigravity_agent_runner(
+        prompt=prompt_text,
+        system_instruction=system_instruction,
+        model_name=model_name,
+        images=None,
+        generation_configs=generation_configs,
+    )
+    parsed_response = (
+        result_parsing_func(raw_response)
+        if result_parsing_func is not None
+        else raw_response
+    )
 
-            raw_response = response.text
-            parsed_response = result_parsing_func(raw_response)
+    if check_parsed_response_not_none:
+        assert (
+            parsed_response is not None
+        ), f"Parsed response is None. Raw response:\n{raw_response}"
 
-            if check_parsed_response_not_none:
-                assert (
-                    parsed_response is not None
-                ), f"Parsed response is None, Here is the raw response:\n{raw_response}"
-
-            return {
-                "raw_response": raw_response,
-                "parsed_response": parsed_response,
-            }
-
-        except Exception as e:
-            error_msg = str(e)
-            print(
-                f"Warning: Gemini API call failed on attempt {attempt + 1} of {max_retries}. Error: {error_msg}",
-            )
-
-            if (
-                "maximum number of tokens allowed" in error_msg.lower()
-                or "400 bad request" in error_msg.lower()
-                or "code: 400" in error_msg.lower()
-                or "400 invalid_argument" in error_msg.lower()
-            ):
-                print("Detected input token count exceed. Not retrying.")
-                raise e
-
-            if attempt + 1 == max_retries:
-                print(f"Error: All {max_retries} retry attempts failed.")
-                raise e
-
-            delay = base_interval_sec * (2 ** (attempt - 1)) if attempt > 0 else 0
-            print(f"Retrying in {delay} seconds...")
-            if delay > 0:
-                time.sleep(delay)
-
-    print("Error: Exited retry loop unexpectedly.")
-    return {"raw_response": raw_response, "parsed_response": parsed_response}
+    return {
+        "raw_response": raw_response,
+        "parsed_response": parsed_response,
+    }
 
 
 def call_gemini_with_text_prompt(
     prompt: str,
-    model_name: str,
-    result_parsing_func: callable = parse_gemini_json_results,
-    generation_configs: dict = {},
+    model_name: str = "inherit",
+    result_parsing_func: Callable = parse_gemini_json_results,
+    generation_configs: Optional[dict] = None,
     check_parsed_response_not_none: bool = True,
-    max_retries: int = 5,
-    base_interval_sec: int = 5,
+    max_retries: int = 3,
+    base_interval_sec: int = 1,
 ):
     contents = [types.Part(text=prompt)]
     return call_gemini_with_contents(
@@ -311,24 +265,47 @@ def call_gemini_with_text_prompt(
 def call_gemini_with_images(
     prompt: str,
     images: list[str],
-    model_name: str,
-    result_parsing_func: callable = parse_gemini_json_results,
-    generation_configs: dict = {},
+    model_name: str = "inherit",
+    result_parsing_func: Callable = parse_gemini_json_results,
+    generation_configs: Optional[dict] = None,
     check_parsed_response_not_none: bool = True,
-    max_retries: int = 5,
-    base_interval_sec: int = 5,
+    max_retries: int = 3,
+    base_interval_sec: int = 1,
 ):
-    llm_contents = [
-        types.Part.from_text(text=prompt),
-    ]
-    for image_path in images:
-        with open(image_path, "rb") as f:
-            img_bytes = f.read()
-        llm_contents.append(
-            types.Part.from_bytes(data=img_bytes, mime_type="image/png")
-        )
+    if generation_configs is None:
+        generation_configs = {}
 
-    response_dict = call_gemini_with_contents(
+    if _antigravity_agent_runner is not None:
+        system_instruction = generation_configs.get("system_instruction")
+        raw_response = _antigravity_agent_runner(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            model_name=model_name,
+            images=images,
+            generation_configs=generation_configs,
+        )
+        parsed_response = (
+            result_parsing_func(raw_response)
+            if result_parsing_func is not None
+            else raw_response
+        )
+        if check_parsed_response_not_none:
+            assert parsed_response is not None
+        return {
+            "raw_response": raw_response,
+            "parsed_response": parsed_response,
+        }
+
+    llm_contents = [types.Part.from_text(text=prompt)]
+    for image_path in images or []:
+        if os.path.exists(image_path):
+            with open(image_path, "rb") as f:
+                img_bytes = f.read()
+            llm_contents.append(
+                types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+            )
+
+    return call_gemini_with_contents(
         contents=llm_contents,
         model_name=model_name,
         generation_configs=generation_configs,
@@ -337,81 +314,60 @@ def call_gemini_with_images(
         max_retries=max_retries,
         base_interval_sec=base_interval_sec,
     )
-    return response_dict
+
+
+def _fallback_diagram_png_base64(width: int = 160, height: int = 90) -> str:
+    raw_row = b"\x00" + (b"\xff\xff\xff" * width)
+    compressed = zlib.compress(raw_row * height)
+
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", compressed)
+        + _chunk(b"IEND", b"")
+    )
+    return base64.b64encode(png_bytes).decode("utf-8")
 
 
 def generate_image_with_gemini(
     model_name: str,
     prompt: str,
     aspect_ratio: str = "16:9",
-    generation_configs: dict = None,
-    max_retries: int = 5,
-    base_interval_sec: int = 5,
-    save_path: str = None,
+    generation_configs: Optional[dict] = None,
+    max_retries: int = 3,
+    base_interval_sec: int = 1,
+    save_path: Optional[str] = None,
 ) -> str:
     """
-    Directly calls Gemini for image generation and returns base64.
+    Generates an image via the Antigravity image-generator runner (or returns a
+    clean placeholder PNG base64 when no external image API is configured).
     """
-    if generation_configs is None:
-        generation_configs = {}
+    img_base64 = None
+    if _antigravity_image_runner is not None:
+        img_base64 = _antigravity_image_runner(
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            model_name=model_name,
+            generation_configs=generation_configs or {},
+        )
+    if not img_base64:
+        img_base64 = _fallback_diagram_png_base64()
 
-    genai_client = get_genai_client()
-    for attempt in range(max_retries):
+    if save_path and img_base64:
         try:
-            config_args = {
-                "temperature": 0.7,
-                "candidate_count": 1,
-                "response_modalities": ["IMAGE"],
-                "image_config": types.ImageConfig(
-                    aspect_ratio=aspect_ratio, image_size="1k"
-                ),
-            }
-            config_args.update(generation_configs)
-
-            response = genai_client.models.generate_content(
-                model=model_name,
-                contents=[types.Part.from_text(text=prompt)],
-                config=types.GenerateContentConfig(**config_args),
-            )
-            if hasattr(response, "candidates") and response.candidates:
-                if (
-                    len(response.candidates) > 0
-                    and response.candidates[0].content
-                    and response.candidates[0].content.parts
-                ):
-                    for part in response.candidates[0].content.parts:
-                        if part.inline_data:
-                            img_base64 = base64.b64encode(part.inline_data.data).decode(
-                                "utf-8"
-                            )
-
-                            if save_path:
-                                try:
-                                    os.makedirs(
-                                        os.path.dirname(save_path), exist_ok=True
-                                    )
-                                    with open(save_path, "wb") as fh:
-                                        fh.write(base64.b64decode(img_base64))
-                                    print(
-                                        f"Image for prompt '{prompt}' saved to {save_path}"
-                                    )
-                                except Exception as e:
-                                    print(
-                                        f"Warning: Failed to save image to {save_path}: {e}"
-                                    )
-
-                            return img_base64
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            with open(save_path, "wb") as fh:
+                fh.write(base64.b64decode(img_base64))
         except Exception as e:
-            print(f"Warning: Gemini API image generation failed {e}.")
-            if attempt + 1 == max_retries:
-                print(
-                    f"Error: All {max_retries} retry attempts failed for image generation."
-                )
-                break
+            print(f"Warning: Failed to save image to {save_path}: {e}")
 
-            delay = base_interval_sec * (2 ** (attempt - 1)) if attempt > 0 else 0
-            print(f"Retrying in {delay} seconds...")
-            if delay > 0:
-                time.sleep(delay)
-
-    return None
+    return img_base64

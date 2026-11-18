@@ -639,6 +639,217 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.pdf")))
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.md")))
 
+    def test_antigravity_run_workflow_engine_end_to_end(self):
+        import ast
+        import asyncio
+        from methods.agy_workflow_runner import run_book_orchestra_workflow
+        from utils.gemini_utils import (
+            set_antigravity_agent_runner,
+            call_gemini_with_text_prompt,
+        )
+
+        # 1. Verify workflow entrypoint compiles with top-level await & skill/schema exist
+        wf_script_path = os.path.join(
+            REPO_ROOT, "workflows", "book_orchestra_workflow.py"
+        )
+        wf_json_path = os.path.join(REPO_ROOT, "workflows", "workflow.json")
+        skill_path = os.path.join(
+            REPO_ROOT, ".agents", "skills", "book-orchestra", "SKILL.md"
+        )
+        self.assertTrue(os.path.exists(wf_script_path))
+        self.assertTrue(os.path.exists(wf_json_path))
+        self.assertTrue(os.path.exists(skill_path))
+
+        with open(wf_script_path, "r", encoding="utf-8") as f:
+            wf_src = f.read()
+        compile(
+            wf_src,
+            wf_script_path,
+            "exec",
+            flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
+        )
+
+        # 2. Verify Antigravity in-process bridge works without external API keys
+        set_antigravity_agent_runner(
+            lambda prompt, **kw: '```json\n{"bridged": true}\n```'
+        )
+        try:
+            bridged_res = call_gemini_with_text_prompt("ping")
+            self.assertEqual(bridged_res["parsed_response"], {"bridged": True})
+        finally:
+            set_antigravity_agent_runner(None)
+
+        # 3. Run full 4-phase Antigravity `run_workflow` orchestration with mocked primitives
+        phases_visited = []
+        logs_emitted = []
+
+        def fake_phase(name: str):
+            phases_visited.append(name)
+
+        def fake_log(*items):
+            logs_emitted.append(" ".join(str(x) for x in items))
+
+        sample_outline = {
+            "book_metadata": {
+                "title": "Engineering Production LLM Systems",
+                "running_case_study": "AtlasGW Gateway",
+                "terminology_glossary": {"TTFT": "Time to First Token"},
+            },
+            "plotting_plan": [
+                {
+                    "figure_id": "fig_gateway_topology",
+                    "title": "AtlasGW Control and Data Plane",
+                    "plot_type": "diagram",
+                    "data_source": "both",
+                    "objective": "Show gateway topology.",
+                    "aspect_ratio": "16:9",
+                }
+            ],
+            "intro_related_work_plan": {
+                "introduction_strategy": {
+                    "hook_hypothesis": "Production OOMs",
+                    "problem_gap_hypothesis": "Unbounded queues",
+                    "search_directions": ["PagedAttention vLLM"],
+                },
+                "related_work_strategy": {"overview": "Serving", "subsections": []},
+            },
+            "section_plan": [
+                {
+                    "section_title": "System Design, Data Models, and Core Engine",
+                    "learning_objectives": ["Model KV cache"],
+                    "subsections": [
+                        {
+                            "subsection_title": "KV-Cache Sizing",
+                            "content_bullets": ["320 KiB/token FP16"],
+                            "citation_hints": ["Kwon2023PagedAttention"],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        sample_tex = r"""\documentclass[11pt,oneside]{book}
+\begin{document}
+\chapter*{Preface}
+Preface for AtlasGW.
+\chapter{Problem Landscape, Core Concepts, and Ecosystem Architecture}
+Foundations citing \cite{Kwon2023EfficientMemory}.
+\chapter{System Design, Data Models, and Core Engine}
+\begin{objectivesbox}
+Size KV-cache memory accurately.
+\end{objectivesbox}
+\begin{lstlisting}[language=Python,caption={Bounded Queue},label={lst:q}]
+async def acquire(tokens: int) -> bool:
+    return tokens > 0
+\end{lstlisting}
+\end{document}
+"""
+
+        review_round = {"calls": 0}
+
+        async def fake_agent(
+            prompt=None,
+            schema=None,
+            role=None,
+            type_name="self",
+            workspace="inherit",
+            model=None,
+        ):
+            role_str = role or ""
+            if "Blueprint Architect" in role_str:
+                return sample_outline
+            if role_str.startswith("Research:"):
+                return {
+                    "section_name": "Foundations",
+                    "candidates": [
+                        {
+                            "title": "Efficient Memory Management for Large Language Model Serving with PagedAttention",
+                            "year": 2023,
+                            "authors": ["Woosuk Kwon"],
+                            "venue": "SOSP",
+                            "reason": "PagedAttention",
+                        }
+                    ],
+                }
+            if "Preface & Foundations Author" in role_str:
+                return sample_tex
+            if "Principal Technical Book Author" in role_str:
+                return sample_tex
+            if "Review Board" in role_str or "Editor-in-Chief" in role_str:
+                review_round["calls"] += 1
+                score = 7 if review_round["calls"] <= 4 else 9
+                return {
+                    "Summary": "Strong systems book",
+                    "Strengths": ["KV-cache math"],
+                    "Weaknesses": ["Add retry jitter note"],
+                    "Technical_Depth": 4,
+                    "Practical_Utility": 4,
+                    "Code_and_Architecture_Quality": 4,
+                    "Pedagogical_Clarity": 4,
+                    "Structural_Coherence": 4,
+                    "Editorial_Polish": 4,
+                    "Questions": [],
+                    "Limitations": [],
+                    "Overall": score,
+                    "Confidence": 4,
+                    "Decision": "Accept",
+                }
+            if "Editorial Revision" in role_str:
+                return {
+                    "worklog": {
+                        "addressed_weaknesses": ["Added retry jitter note"],
+                        "integrated_answers": [],
+                        "actions_taken": ["Updated Chapter 2"],
+                    },
+                    "latex": sample_tex,
+                }
+            return sample_tex
+
+        async def fake_parallel(items, fn):
+            results = []
+            for item in items:
+                res = fn(item)
+                if asyncio.iscoroutine(res):
+                    res = await res
+                results.append(res)
+            return results
+
+        async def fake_pipeline(items, fn):
+            return await fake_parallel(items, fn)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_dir = os.path.join(tmpdir, "book_out")
+            res = asyncio.run(
+                run_book_orchestra_workflow(
+                    workflow_args={
+                        "raw_materials_dir": os.path.join(
+                            REPO_ROOT,
+                            "examples",
+                            "distributed_llm_systems_book",
+                            "raw_materials",
+                        ),
+                        "latex_template_dir": os.path.join(
+                            REPO_ROOT, "templates", "oreilly_style_book"
+                        ),
+                        "output_dir": out_dir,
+                        "use_plotting": True,
+                        "max_reflections": 1,
+                    },
+                    phase_fn=fake_phase,
+                    log_fn=fake_log,
+                    agent_fn=fake_agent,
+                    parallel_fn=fake_parallel,
+                    pipeline_fn=fake_pipeline,
+                )
+            )
+
+            self.assertEqual(res["status"], "success")
+            self.assertEqual(len(phases_visited), 4)
+            self.assertTrue(os.path.exists(res["final_book_pdf"]))
+            self.assertTrue(os.path.exists(res["final_book_tex"]))
+            self.assertTrue(os.path.exists(res["final_book_md"]))
+            self.assertGreaterEqual(len(res["chapters"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

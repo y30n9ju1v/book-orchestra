@@ -12,211 +12,76 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
-import re
-import json
-import time
-import os
-import sys
-import threading
+"""
+Compatibility wrapper routing former OpenAI helper calls through the Antigravity
+native workflow bridge (`utils/gemini_utils.py`) with zero external API keys.
+"""
+
+from typing import Any, Callable, Optional
 import base64
 
-try:
-    import cv2  # type: ignore
-except ImportError:
-    cv2 = None  # type: ignore
+from utils.gemini_utils import (
+    parse_gemini_json_results,
+    call_gemini_with_contents,
+    call_gemini_with_text_prompt,
+    types,
+)
 
-try:
-    from openai import OpenAI  # type: ignore
-except ImportError:
-    OpenAI = Any  # type: ignore
-
-try:
-    from dotenv import load_dotenv  # type: ignore
-except ImportError:
-
-    def load_dotenv(dotenv_path=None):
-        if not dotenv_path or not os.path.exists(dotenv_path):
-            return False
-        with open(dotenv_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-        return True
-
-dot_file = os.path.join(os.path.dirname(__file__), "../.env")
-load_dotenv(dot_file)
-
-_openai_client = None
-_openai_client_lock = threading.Lock()
-
-
-def get_openai_client():
-    """Returns a shared OpenAI client, creating it on first use.
-
-    The client is created lazily so that OPENAI_API_KEY is only required when
-    an OpenAI model is actually called (e.g. Gemini-only setups don't need it).
-    """
-    if OpenAI is Any:
-        raise ImportError(
-            "The 'openai' package is required to call OpenAI models. "
-            "Install it via `pip install -r requirements.txt`."
-        )
-    global _openai_client
-    if _openai_client is None:
-        with _openai_client_lock:
-            if _openai_client is None:
-                openai_api_key = os.environ.get("OPENAI_API_KEY")
-                if not openai_api_key:
-                    raise ValueError("OPENAI_API_KEY must be set to use OpenAI models.")
-                _openai_client = OpenAI(api_key=openai_api_key)
-    return _openai_client
-
-
-def parse_openai_json_results(response: str):
-    if not response or not isinstance(response, str):
-        return None
-
-    json_pattern = r"```json(.*?)```"
-    matches = re.findall(json_pattern, response, re.DOTALL)
-
-    if not matches:
-        json_pattern = r"(\{.*\}|\[.*\])"
-        matches = re.findall(json_pattern, response, re.DOTALL)
-
-    for json_string in matches:
-        json_string = json_string.strip()
-        try:
-            parsed_json = json.loads(json_string)
-            return parsed_json
-        except json.JSONDecodeError:
-            try:
-                json_string_clean = re.sub(r"[\x00-\x1F\x7F]", "", json_string)
-                json_string_clean = re.sub(r",\s*([\]}])", r"\1", json_string_clean)
-                json_string_clean = re.sub(
-                    r'\\(?![\\"/bfnrtu])', r"\\\\", json_string_clean
-                )
-
-                parsed_json = json.loads(json_string_clean)
-                return parsed_json
-            except json.JSONDecodeError:
-                continue
-
-    try:
-        start_idx = response.find("{")
-        end_idx = response.rfind("}")
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            json_string = response[start_idx : end_idx + 1]
-            json_string_clean = re.sub(r"[\x00-\x1F\x7F]", "", json_string)
-            json_string_clean = re.sub(r",\s*([\]}])", r"\1", json_string_clean)
-            json_string_clean = re.sub(
-                r'\\(?![\\"/bfnrtu])', r"\\\\", json_string_clean
-            )
-            return json.loads(json_string_clean)
-    except Exception:
-        pass
-
-    try:
-        start_idx = response.find("[")
-        end_idx = response.rfind("]")
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            json_string = response[start_idx : end_idx + 1]
-            json_string_clean = re.sub(r"[\x00-\x1F\x7F]", "", json_string)
-            json_string_clean = re.sub(r",\s*([\]}])", r"\1", json_string_clean)
-            json_string_clean = re.sub(
-                r'\\(?![\\"/bfnrtu])', r"\\\\", json_string_clean
-            )
-            return json.loads(json_string_clean)
-    except Exception:
-        pass
-
-    return None  # No valid JSON found
+parse_openai_json_results = parse_gemini_json_results
 
 
 def call_openai_models_with_content(
     content: list[Any],
-    model_name: str,
-    max_retries: int = 5,
-    base_interval_sec: int = 5,
-    result_parsing_func: callable = parse_openai_json_results,
-    generation_configs: dict = {},
+    model_name: str = "inherit",
+    max_retries: int = 3,
+    base_interval_sec: int = 1,
+    result_parsing_func: Callable = parse_openai_json_results,
+    generation_configs: Optional[dict] = None,
     check_parsed_response_not_none: bool = True,
-    system_prompt: str = None,
+    system_prompt: Optional[str] = None,
 ):
-    raw_response = None
-    parsed_response = None
-    openai_client = get_openai_client()
+    configs = dict(generation_configs or {})
+    if system_prompt:
+        configs["system_instruction"] = system_prompt
 
-    for attempt in range(max_retries):
-        try:
-            messages = []
-            if system_prompt:
-                role = "developer" if model_name.startswith(("o1", "o3")) else "system"
-                messages.append({"role": role, "content": system_prompt})
-
-            messages.append({"role": "user", "content": content})
-
-            response = openai_client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                **generation_configs,
-            )
-            raw_response = response.choices[0].message.content
-            parsed_response = result_parsing_func(raw_response)
-
-            if check_parsed_response_not_none:
-                assert (
-                    parsed_response is not None
-                ), f"Parsed response is None, Here is the raw response:\n{raw_response}"
-
-            return {
-                "raw_response": raw_response,
-                "parsed_response": parsed_response,
-            }
-
-        except Exception as e:
-            print(
-                f"Warning: OpenAI API call (model={model_name}) failed on attempt {attempt + 1} of {max_retries}. Error: {e}",
-            )
-
-            if attempt + 1 == max_retries:
-                print(f"Error: All {max_retries} retry attempts failed.")
-                raise e
-
-            delay = base_interval_sec * (2 ** (attempt - 1)) if attempt > 0 else 0
-            print(f"Retrying in {delay} seconds...")
-            if delay > 0:
-                time.sleep(delay)
-
-    print("Error: Exited retry loop unexpectedly.")
-    return {
-        "raw_response": raw_response,
-        "parsed_response": parsed_response,
-    }
+    parts = []
+    for item in content or []:
+        if isinstance(item, dict) and item.get("type") == "text":
+            parts.append(types.Part.from_text(text=item.get("text", "")))
+        elif isinstance(item, str):
+            parts.append(types.Part.from_text(text=item))
+    return call_gemini_with_contents(
+        contents=parts,
+        model_name=model_name,
+        max_retries=max_retries,
+        base_interval_sec=base_interval_sec,
+        result_parsing_func=result_parsing_func,
+        generation_configs=configs,
+        check_parsed_response_not_none=check_parsed_response_not_none,
+    )
 
 
 def call_openai_models_with_text_prompt(
     prompt: str,
-    model_name: str,
-    result_parsing_func: callable = parse_openai_json_results,
-    generation_configs: dict = {},
+    model_name: str = "inherit",
+    result_parsing_func: Callable = parse_openai_json_results,
+    generation_configs: Optional[dict] = None,
     check_parsed_response_not_none: bool = True,
-    max_retries: int = 5,
-    base_interval_sec: int = 5,
-    system_prompt: str = None,
+    max_retries: int = 3,
+    base_interval_sec: int = 1,
+    system_prompt: Optional[str] = None,
 ):
-    return call_openai_models_with_content(
-        content=[{"type": "text", "text": prompt}],
+    configs = dict(generation_configs or {})
+    if system_prompt:
+        configs["system_instruction"] = system_prompt
+    return call_gemini_with_text_prompt(
+        prompt=prompt,
         model_name=model_name,
         result_parsing_func=result_parsing_func,
-        generation_configs=generation_configs,
+        generation_configs=configs,
         check_parsed_response_not_none=check_parsed_response_not_none,
         max_retries=max_retries,
         base_interval_sec=base_interval_sec,
-        system_prompt=system_prompt,
     )
 
 
@@ -224,7 +89,7 @@ def get_openai_image_part_from_path(image_path: str):
     with open(image_path, "rb") as image_file:
         base64_image = base64.b64encode(image_file.read()).decode("utf-8")
 
-    image_content = [
+    return [
         {
             "type": "image_url",
             "image_url": {
@@ -232,4 +97,3 @@ def get_openai_image_part_from_path(image_path: str):
             },
         }
     ]
-    return image_content

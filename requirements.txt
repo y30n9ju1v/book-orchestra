@@ -1,9 +1,7 @@
-google-genai
 joblib
 json_repair
 matplotlib
 numpy
-openai
 opencv-python
 pydantic
 PyMuPDF

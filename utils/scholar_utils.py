@@ -50,7 +50,6 @@ except ImportError:
 cur_dir = os.path.dirname(os.path.realpath(__file__))
 load_dotenv(os.path.join(cur_dir, "../.env"))
 S2_API_KEY = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
-print(f"Using S2 API Key: {S2_API_KEY}")
 
 
 # --- SEMANTIC SCHOLAR UTILS ---

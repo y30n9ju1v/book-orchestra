@@ -18,9 +18,46 @@ import json
 import shutil
 import struct
 import subprocess
+import tempfile
 import textwrap
+import threading
 import traceback
 import zlib
+
+_LAST_COMPILE_STATE = threading.local()
+
+FORBIDDEN_LATEX_COMMANDS: list[tuple[str, str]] = [
+    (r"\\write\s*18(?![a-zA-Z])", r"\write18 (shell execution)"),
+    (r"\\immediate(?![a-zA-Z])", r"\immediate (unrestricted stream/shell I/O)"),
+    (r"\\openin(?![a-zA-Z])", r"\openin (arbitrary file read)"),
+    (r"\\openout(?![a-zA-Z])", r"\openout (arbitrary file write)"),
+    (r"\\newread(?![a-zA-Z])", r"\newread"),
+    (r"\\newwrite(?![a-zA-Z])", r"\newwrite"),
+    (r"\\read(?![a-zA-Z])", r"\read (file stream read)"),
+    (r"\\input(?![a-zA-Z])", r"\input (arbitrary file inclusion)"),
+    (r"\\include(?![a-zA-Z])", r"\include (arbitrary file inclusion)"),
+    (r"\\verbatiminput(?![a-zA-Z])", r"\verbatiminput (file inclusion)"),
+    (r"\\lstinputlisting(?![a-zA-Z])", r"\lstinputlisting (file inclusion)"),
+    (r"\\ShellEscape(?![a-zA-Z])", r"\ShellEscape"),
+    (r"\\catcode(?![a-zA-Z])", r"\catcode (TeX lexer mutation)"),
+    (r"\\@@input(?![a-zA-Z])", r"\@@input"),
+    (r"\\special(?![a-zA-Z])", r"\special"),
+    (r"\\pdfobj(?![a-zA-Z])", r"\pdfobj"),
+]
+
+
+def detect_latex_engine() -> str | None:
+    """Returns 'pdflatex', 'tectonic', or None if no LaTeX engine is installed."""
+    if shutil.which("pdflatex"):
+        return "pdflatex"
+    if shutil.which("tectonic"):
+        return "tectonic"
+    return None
+
+
+def get_last_compile_mode() -> str:
+    """Returns the render mode from the most recent compile_latex call ('pdflatex'|'tectonic'|'preview'|'failed')."""
+    return getattr(_LAST_COMPILE_STATE, "render_mode", "unknown")
 
 try:
     import rich
@@ -445,6 +482,13 @@ def validate_latex_syntax(
         flags=re.DOTALL,
     )
 
+    # Check for dangerous TeX file/shell primitives outside verbatim/lstlisting blocks
+    for pattern, label in FORBIDDEN_LATEX_COMMANDS:
+        if re.search(pattern, masked):
+            errors.append(
+                f"Forbidden LaTeX command detected: {label} is blocked for security."
+            )
+
     # Verify balanced \begin{...} and \end{...} stack
     env_Stack: list[str] = []
     for match in re.finditer(r"\\(begin|end)\{([^}]+)\}", masked):
@@ -487,10 +531,17 @@ def validate_latex_syntax(
 
     # Verify referenced figure files and BibTeX citation consistency when cwd is provided
     if cwd and os.path.isdir(cwd):
+        from utils.path_security import is_within_directory
+
         for inc_match in re.finditer(
             r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", masked
         ):
             fig_rel = inc_match.group(1).strip()
+            if os.path.isabs(fig_rel) or ".." in fig_rel.replace("\\", "/").split("/"):
+                errors.append(
+                    f"Unsafe \\includegraphics path '{fig_rel}' (absolute or parent traversal disallowed)."
+                )
+                continue
             candidates = [
                 os.path.join(cwd, fig_rel),
                 os.path.join(cwd, f"{fig_rel}.pdf"),
@@ -498,7 +549,7 @@ def validate_latex_syntax(
                 os.path.join(cwd, f"{fig_rel}.jpg"),
                 os.path.join(cwd, f"{fig_rel}.jpeg"),
             ]
-            if not any(os.path.exists(c) for c in candidates):
+            if not any(os.path.exists(c) and is_within_directory(c, cwd) for c in candidates):
                 errors.append(
                     f"Missing figure file referenced by \\includegraphics{{{fig_rel}}} in {cwd}."
                 )
@@ -663,13 +714,62 @@ def inspect_book_layout_issues(latex_text: str, cwd: str = None) -> dict:
     }
 
 
-def compile_latex(cwd, pdf_file, texfile_name="template", timeout=30) -> bool:
+def _stage_isolated_latex_sandbox(
+    cwd: str, sandbox_dir: str, texfile_name: str
+) -> None:
+    """
+    Copies only allowlisted LaTeX build inputs (.tex target, .cls/.sty/.bst/.bib, and
+    image assets under figures/) into an isolated temporary compilation directory.
+    """
+    allowed_root_exts = {".cls", ".sty", ".bst", ".bib"}
+    target_tex = os.path.join(cwd, f"{texfile_name}.tex")
+    shutil.copy2(target_tex, os.path.join(sandbox_dir, f"{texfile_name}.tex"))
+
+    for entry in os.listdir(cwd):
+        src_entry = os.path.join(cwd, entry)
+        if os.path.isfile(src_entry):
+            ext = os.path.splitext(entry)[1].lower()
+            if ext in allowed_root_exts:
+                shutil.copy2(src_entry, os.path.join(sandbox_dir, entry))
+
+    src_figs = os.path.join(cwd, "figures")
+    if os.path.isdir(src_figs):
+        dst_figs = os.path.join(sandbox_dir, "figures")
+        os.makedirs(dst_figs, exist_ok=True)
+        for root, _, files in os.walk(src_figs):
+            rel_dir = os.path.relpath(root, src_figs)
+            cur_dst_dir = os.path.join(dst_figs, rel_dir) if rel_dir != "." else dst_figs
+            os.makedirs(cur_dst_dir, exist_ok=True)
+            for fname in files:
+                if os.path.splitext(fname)[1].lower() in {".png", ".jpg", ".jpeg", ".pdf"}:
+                    shutil.copy2(os.path.join(root, fname), os.path.join(cur_dst_dir, fname))
+
+
+def compile_latex(
+    cwd,
+    pdf_file,
+    texfile_name="template",
+    timeout=30,
+    strict_latex: bool = False,
+    preview_pdf_file: str = None,
+) -> bool:
+    """
+    Validates LaTeX syntax & security primitives, then compiles in an isolated sandbox
+    using `pdflatex -no-shell-escape` or `tectonic`.
+    If no TeX engine is installed:
+      - In `strict_latex=True` (publish mode): fails and returns False.
+      - In preview mode: writes Markdown/HTML preview PDF (to `preview_pdf_file` if provided,
+        otherwise `pdf_file` for internal intermediate drafts) and sets render_mode='preview'.
+    """
+    _LAST_COMPILE_STATE.render_mode = "failed"
     source_pdf = os.path.join(cwd, f"{texfile_name}.pdf")
     source_tex = os.path.join(cwd, f"{texfile_name}.tex")
     if os.path.exists(source_pdf):
         os.remove(source_pdf)
     if os.path.exists(pdf_file):
         os.remove(pdf_file)
+    if preview_pdf_file and os.path.exists(preview_pdf_file):
+        os.remove(preview_pdf_file)
 
     if not os.path.exists(source_tex):
         rich.print(f"[bold red]❌ LaTeX source file not found: {source_tex}[/bold red]")
@@ -687,127 +787,194 @@ def compile_latex(cwd, pdf_file, texfile_name="template", timeout=30) -> bool:
             rich.print(f"[red]  - {err}[/red]")
         return False
 
-    has_pdflatex = shutil.which("pdflatex") is not None
-    if has_pdflatex:
-        env = dict(os.environ)
-        for var in ["TEXINPUTS", "TEXMFHOME", "TEXMF", "TEXMFVAR", "TEXMFCONFIG"]:
-            env.pop(var, None)
+    engine = detect_latex_engine()
+    if engine is not None:
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/local/bin:/Library/TeX/texbin"),
+            "openin_any": "p",
+            "openout_any": "p",
+            "shell_escape": "f",
+        }
+        if "HOME" in os.environ:
+            env["HOME"] = os.environ["HOME"]
 
         has_citations = bool(
             re.search(r"\\(?:cite|citet|citep)(?:\[[^\]]*\])?\{[^}]+\}", tex_content)
             and re.search(r"\\bibliography\{[^}]+\}", tex_content)
         )
-        commands = [
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"{texfile_name}.tex"],
-        ]
-        if has_citations:
-            commands.append(["bibtex", texfile_name])
-        commands.extend(
-            [
-                ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"{texfile_name}.tex"],
-                ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"{texfile_name}.tex"],
+
+        if engine == "pdflatex":
+            commands = [
+                [
+                    "pdflatex",
+                    "-no-shell-escape",
+                    "-interaction=nonstopmode",
+                    "-halt-on-error",
+                    f"{texfile_name}.tex",
+                ],
             ]
-        )
+            if has_citations:
+                commands.append(["bibtex", texfile_name])
+            commands.extend(
+                [
+                    [
+                        "pdflatex",
+                        "-no-shell-escape",
+                        "-interaction=nonstopmode",
+                        "-halt-on-error",
+                        f"{texfile_name}.tex",
+                    ],
+                    [
+                        "pdflatex",
+                        "-no-shell-escape",
+                        "-interaction=nonstopmode",
+                        "-halt-on-error",
+                        f"{texfile_name}.tex",
+                    ],
+                ]
+            )
+        else:  # tectonic
+            commands = [
+                [
+                    "tectonic",
+                    "-Z",
+                    "shell-escape-disabled",
+                    "--keep-logs",
+                    f"{texfile_name}.tex",
+                ]
+            ]
 
         execution_logs = []
+        with tempfile.TemporaryDirectory(prefix="book_tex_sbx_") as sbx_dir:
+            _stage_isolated_latex_sandbox(cwd, sbx_dir, texfile_name)
+            sbx_pdf = os.path.join(sbx_dir, f"{texfile_name}.pdf")
 
-        for command in commands:
-            cmd_str = " ".join(command)
-            try:
-                result = subprocess.run(
-                    command,
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    env=env,
-                )
-
-                execution_logs.append(
-                    {
-                        "cmd": cmd_str,
-                        "returncode": result.returncode,
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                    }
-                )
-
-            except subprocess.TimeoutExpired:
-                execution_logs.append(
-                    {"cmd": cmd_str, "error": f"TIMEOUT after {timeout}s"}
-                )
-            except Exception as e:
-                execution_logs.append({"cmd": cmd_str, "error": str(e)})
-
-        has_timeout = any(
-            "error" in log and "TIMEOUT" in log["error"] for log in execution_logs
-        )
-        final_pdflatex_log = execution_logs[-1] if execution_logs else {}
-        final_rc = final_pdflatex_log.get("returncode", 1)
-        final_stdout = final_pdflatex_log.get("stdout", "")
-
-        has_bibtex_error = False
-        if has_citations:
-            for log in execution_logs:
-                if log.get("cmd", "").startswith("bibtex"):
-                    b_out = (log.get("stdout") or "") + "\n" + (log.get("stderr") or "")
+            for command in commands:
+                cmd_str = " ".join(command)
+                try:
+                    result = subprocess.run(
+                        command,
+                        cwd=sbx_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        env=env,
+                    )
+                    # Fallback if older tectonic version does not support -Z shell-escape-disabled
                     if (
-                        log.get("returncode", 0) != 0
-                        or "error message" in b_out.lower()
-                        or "I didn't find a database entry for" in b_out
+                        engine == "tectonic"
+                        and result.returncode != 0
+                        and "unexpected argument '-Z'" in (result.stderr or "")
                     ):
-                        has_bibtex_error = True
+                        result = subprocess.run(
+                            ["tectonic", "--keep-logs", f"{texfile_name}.tex"],
+                            cwd=sbx_dir,
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout,
+                            env=env,
+                        )
 
-        has_fatal_tex_error = (
-            final_rc != 0
-            or has_bibtex_error
-            or "! LaTeX Error:" in final_stdout
-            or "! Emergency stop" in final_stdout
-            or "LaTeX Warning: Citation `" in final_stdout
-        )
+                    execution_logs.append(
+                        {
+                            "cmd": cmd_str,
+                            "returncode": result.returncode,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                        }
+                    )
 
-        if (
-            os.path.exists(source_pdf)
-            and not has_timeout
-            and not has_fatal_tex_error
-        ):
-            try:
-                shutil.move(source_pdf, pdf_file)
-                return True
-            except Exception:
-                rich.print(
-                    f"[bold red]Error moving generated PDF to {pdf_file}[/bold red]"
-                )
-                print(traceback.format_exc())
-                return False
-        else:
-            rich.print(
-                f"\n[bold red]❌ PDF Generation Failed via pdflatex (rc={final_rc})[/bold red]"
+                except subprocess.TimeoutExpired:
+                    execution_logs.append(
+                        {"cmd": cmd_str, "error": f"TIMEOUT after {timeout}s"}
+                    )
+                except Exception as e:
+                    execution_logs.append({"cmd": cmd_str, "error": str(e)})
+
+            has_timeout = any(
+                "error" in log and "TIMEOUT" in log["error"] for log in execution_logs
             )
-            for log in execution_logs:
-                if "error" in log:
-                    header_color = "red"
-                elif log["returncode"] == 0:
-                    header_color = "green"
-                else:
-                    header_color = "yellow"
-                rich.print(
-                    f"\n[bold {header_color}]---> Ran: {log['cmd']}[/bold {header_color}]"
-                )
-                if "error" in log:
-                    rich.print(f"[bold red]SYSTEM ERROR: {log['error']}[/bold red]")
-                else:
-                    if log["stdout"].strip():
-                        rich.print(f"[dim]{log['stdout'].strip()}[/dim]")
-                    if log["stderr"].strip():
-                        rich.print(f"[red]{log['stderr'].strip()}[/red]")
-            return False
-    else:
-        print(
-            "⚠️ Warning: 'pdflatex' binary not found on system. LaTeX syntax validated; rendering preview PDF via fallback renderer."
-        )
+            final_pdflatex_log = execution_logs[-1] if execution_logs else {}
+            final_rc = final_pdflatex_log.get("returncode", 1)
+            final_stdout = (final_pdflatex_log.get("stdout") or "") + "\n" + (
+                final_pdflatex_log.get("stderr") or ""
+            )
 
-    # Fallback rendering (ONLY when pdflatex is not installed AND validate_latex_syntax passed)
+            has_bibtex_error = False
+            if has_citations and engine == "pdflatex":
+                for log in execution_logs:
+                    if log.get("cmd", "").startswith("bibtex"):
+                        b_out = (log.get("stdout") or "") + "\n" + (log.get("stderr") or "")
+                        if (
+                            log.get("returncode", 0) != 0
+                            or "error message" in b_out.lower()
+                            or "I didn't find a database entry for" in b_out
+                        ):
+                            has_bibtex_error = True
+
+            has_fatal_tex_error = (
+                final_rc != 0
+                or has_bibtex_error
+                or "! LaTeX Error:" in final_stdout
+                or "! Emergency stop" in final_stdout
+                or "LaTeX Warning: Citation `" in final_stdout
+            )
+
+            if (
+                os.path.exists(sbx_pdf)
+                and not has_timeout
+                and not has_fatal_tex_error
+            ):
+                try:
+                    os.makedirs(os.path.dirname(os.path.abspath(pdf_file)), exist_ok=True)
+                    shutil.move(sbx_pdf, pdf_file)
+                    _LAST_COMPILE_STATE.render_mode = engine
+                    return True
+                except Exception:
+                    rich.print(
+                        f"[bold red]Error moving generated PDF to {pdf_file}[/bold red]"
+                    )
+                    print(traceback.format_exc())
+                    return False
+
+        rich.print(
+            f"\n[bold red]❌ PDF Generation Failed via {engine} (rc={final_rc})[/bold red]"
+        )
+        for log in execution_logs:
+            if "error" in log:
+                header_color = "red"
+            elif log["returncode"] == 0:
+                header_color = "green"
+            else:
+                header_color = "yellow"
+            rich.print(
+                f"\n[bold {header_color}]---> Ran: {log['cmd']}[/bold {header_color}]"
+            )
+            if "error" in log:
+                rich.print(f"[bold red]SYSTEM ERROR: {log['error']}[/bold red]")
+            else:
+                if log["stdout"].strip():
+                    rich.print(f"[dim]{log['stdout'].strip()}[/dim]")
+                if log["stderr"].strip():
+                    rich.print(f"[red]{log['stderr'].strip()}[/red]")
+        return False
+
+    if strict_latex:
+        rich.print(
+            "[bold red]❌ Publish Mode Error: Neither 'pdflatex' nor 'tectonic' is installed. "
+            "Cannot produce a publication-grade typeset PDF.[/bold red]"
+        )
+        _LAST_COMPILE_STATE.render_mode = "failed"
+        return False
+
+    preview_target = preview_pdf_file or pdf_file
+    print(
+        f"⚠️ Warning: No TeX engine ('pdflatex'/'tectonic') found on system. "
+        f"LaTeX syntax validated; rendering non-typeset preview PDF at '{preview_target}'."
+    )
+
+    # Fallback preview rendering (ONLY when no TeX engine is installed, strict_latex=False,
+    # AND validate_latex_syntax passed)
     md_text = latex_to_markdown(tex_content)
     if pymupdf is not None and hasattr(pymupdf, "Story"):
         try:
@@ -830,7 +997,7 @@ def compile_latex(cwd, pdf_file, texfile_name="template", timeout=30) -> bool:
                     html_lines.append(f"<p>{escaped or '&nbsp;'}</p>")
             html_lines.append("</body></html>")
             story = pymupdf.Story(html="\n".join(html_lines))
-            writer = pymupdf.DocumentWriter(pdf_file)
+            writer = pymupdf.DocumentWriter(preview_target)
             mediabox = pymupdf.paper_rect("letter")
             where = mediabox + (54, 54, -54, -54)
             more = True
@@ -840,12 +1007,16 @@ def compile_latex(cwd, pdf_file, texfile_name="template", timeout=30) -> bool:
                 story.draw(dev, None)
                 writer.end_page()
             writer.close()
+            _LAST_COMPILE_STATE.render_mode = "preview"
             return True
         except Exception as e:
             print(f"PyMuPDF Story fallback failed, using pure-Python PDF writer: {e}")
 
-    render_minimal_pdf(md_text, pdf_file)
-    return os.path.exists(pdf_file)
+    render_minimal_pdf(md_text, preview_target)
+    if os.path.exists(preview_target):
+        _LAST_COMPILE_STATE.render_mode = "preview"
+        return True
+    return False
 
 
 def pdf_to_grid_images(pdf_path, output_dir, scale=2.0):

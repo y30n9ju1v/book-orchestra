@@ -260,8 +260,14 @@ class PlottingAgent:
 
             for res in results:
                 if res.get("base64_img"):
-                    fig_id_clean = res["figure_id"].replace(" ", "_").lower()
-                    img_path = os.path.join(figures_dir, f"{fig_id_clean}.jpg")
+                    from utils.path_security import resolve_safe_child_path, sanitize_slug
+
+                    fig_id_clean = sanitize_slug(
+                        res.get("figure_id", "figure"), default="figure"
+                    )
+                    img_path = str(
+                        resolve_safe_child_path(figures_dir, f"{fig_id_clean}.jpg")
+                    )
                     try:
                         with open(img_path, "wb") as fh:
                             fh.write(base64.b64decode(res["base64_img"]))

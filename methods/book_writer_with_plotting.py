@@ -49,12 +49,16 @@ def write_single_book(
     reflection_model_name: str = "inherit",
     plotting_model_name: str = "inherit",
     image_model_name: str = "image-generator",
-    research_cutoff: str = "2026-11",
+    research_cutoff: str = None,
     plotting_max_critic_rounds: int = 3,
     target_audience: str = "Senior Software & Systems Engineers",
     book_style: str = "Practical Architecture & Production Engineering",
-    max_reflections: int = 3,
+    max_reflections: int = 2,
 ):
+    from datetime import datetime
+
+    if not research_cutoff or str(research_cutoff).strip().lower() in ("current", "auto", "latest", "none", "null"):
+        research_cutoff = datetime.now().strftime("%Y-%m")
     latex_writeup_dir = osp.join(base_dir, "latex_writeup")
     pdf_file = osp.join(base_dir, "final_book.pdf")
 
@@ -383,12 +387,16 @@ def run_batch_book_writeup(
     plotting_model_name: str = "inherit",
     image_model_name: str = "image-generator",
     plotting_max_critic_rounds: int = 3,
-    research_cutoff: str = "2026-11",
+    research_cutoff: str = None,
     target_audience: str = "Senior Software & Systems Engineers",
     book_style: str = "Practical Architecture & Production Engineering",
     n_books: int = -1,
     max_workers: int = 4,
 ):
+    from datetime import datetime
+
+    if not research_cutoff or str(research_cutoff).strip().lower() in ("current", "auto", "latest", "none", "null"):
+        research_cutoff = datetime.now().strftime("%Y-%m")
     if output_dir == "":
         output_dir = create_log_folder(
             prefix=output_dir_prefix, date_str=date_str, log_dir="./logs/book_writing"

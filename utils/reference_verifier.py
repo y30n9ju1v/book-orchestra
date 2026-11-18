@@ -17,8 +17,10 @@ Reference Verification, Authoritative Registry Resolution, Cutoff Enforcement,
 BibTeX Typing, and Citation Audit for BookOrchestra.
 """
 
+import ipaddress
 import json
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -193,8 +195,62 @@ def is_valid_isbn_checksum(isbn_raw: str) -> bool:
     return False
 
 
-def is_safe_authoritative_url(url_raw: str) -> bool:
-    """Rejects malformed, local, `.invalid`, `.example`, `.test`, or fake URLs."""
+def _is_forbidden_ip_address(ip_str: str) -> bool:
+    """Returns True if `ip_str` is loopback, private, link-local, multicast, reserved, or unspecified."""
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True
+    return bool(
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_link_local
+        or ip_obj.is_multicast
+        or ip_obj.is_reserved
+        or ip_obj.is_unspecified
+        or not ip_obj.is_global
+    )
+
+
+def _check_host_public_dns(host: str) -> bool:
+    """
+    Validates that `host` does not denote a forbidden IP literal and, when DNS is
+    available, resolves cleanly without pointing to private/link-local/loopback IPs.
+    """
+    clean_host = (host or "").strip("[]").lower()
+    if not clean_host:
+        return False
+
+    # Reject IP literals in forbidden ranges immediately (e.g. 169.254.169.254, 10.0.0.1, 127.0.0.1, ::1)
+    try:
+        ipaddress.ip_address(clean_host)
+        return not _is_forbidden_ip_address(clean_host)
+    except ValueError:
+        pass
+
+    # If host resolves via DNS, ensure EVERY resolved IP is globally routable
+    try:
+        infos = socket.getaddrinfo(clean_host, None)
+        if infos:
+            for info in infos:
+                addr = info[4][0]
+                if "%" in addr:
+                    addr = addr.split("%", 1)[0]
+                if _is_forbidden_ip_address(addr):
+                    return False
+    except OSError:
+        # DNS resolution may be disabled in offline sandboxes; rely on hostname/domain checks below
+        pass
+    return True
+
+
+def is_safe_authoritative_url(
+    url_raw: str, check_dns: bool = True
+) -> bool:
+    """
+    Rejects malformed, local, `.invalid`, `.example`, `.test`, private/link-local/metadata IP,
+    and fake URLs to prevent SSRF.
+    """
     url = str(url_raw or "").strip()
     if not url:
         return False
@@ -213,7 +269,31 @@ def is_safe_authoritative_url(url_raw: str) -> bool:
         for part in host.split(".")
     ):
         return False
+    if check_dns and not _check_host_public_dns(host):
+        return False
     return True
+
+
+class _SSRFGuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Validates every redirect target URL against SSRF rules before following."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        resolved = urllib.parse.urljoin(req.full_url, str(newurl))
+        if not is_safe_authoritative_url(resolved, check_dns=True):
+            raise urllib.error.URLError(
+                f"Blocked unsafe redirect destination: {resolved}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+
+def _ssrf_safe_urlopen(req: urllib.request.Request, timeout: float = 3.5):
+    """
+    Validates both initial URL and all HTTP redirects against SSRF rules (private/loopback/metadata IPs).
+    """
+    if not is_safe_authoritative_url(req.full_url, check_dns=True):
+        raise ValueError(f"Blocked unsafe or private URL: {req.full_url}")
+    opener = urllib.request.build_opener(_SSRFGuardedRedirectHandler())
+    return opener.open(req, timeout=timeout)
 
 
 def _match_canonical_catalog(cand: Dict) -> Tuple[Optional[bool], str]:
@@ -270,13 +350,15 @@ def _http_get_json(url: str, timeout: float = 3.5) -> Tuple[str, Optional[dict]]
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _ssrf_safe_urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
                 raw = resp.read().decode("utf-8", errors="replace")
                 return "ok", json.loads(raw)
             if resp.status in (400, 404, 410):
                 return "not_found", None
             return "unreachable", None
+    except ValueError:
+        return "not_found", None
     except urllib.error.HTTPError as e:
         if e.code in (400, 404, 410):
             return "not_found", None
@@ -312,12 +394,12 @@ def _verify_doi_online(doi: str, cand_title: str, cand_year: int) -> Tuple[Optio
 def _verify_arxiv_online(
     arxiv_num: str, cand_title: str, cand_year: int
 ) -> Tuple[Optional[bool], str]:
-    url = f"http://export.arxiv.org/api/query?id_list={urllib.parse.quote(arxiv_num)}"
+    url = f"https://export.arxiv.org/api/query?id_list={urllib.parse.quote(arxiv_num)}"
     req = urllib.request.Request(
         url, headers={"User-Agent": "BookOrchestra-ReferenceVerifier/1.0"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=3.5) as resp:
+        with _ssrf_safe_urlopen(req, timeout=3.5) as resp:
             xml_text = resp.read().decode("utf-8", errors="replace")
         root = ET.fromstring(xml_text)
         ns = {"atom": "http://www.w3.org/2005/Atom"}
@@ -383,7 +465,9 @@ def _verify_url_online(url: str, cand_title: str) -> Tuple[Optional[bool], str]:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=3.5) as resp:
+        with _ssrf_safe_urlopen(req, timeout=3.5) as resp:
+            if not is_safe_authoritative_url(resp.geturl(), check_dns=True):
+                return False, "unsafe_redirect_target"
             if resp.status >= 400:
                 return False, f"url_http_{resp.status}"
             chunk = resp.read(32768).decode("utf-8", errors="ignore")

@@ -64,8 +64,10 @@ python3 book_writing_cli.py \
 
 ## Generated Outputs
 Inside `output_dir`:
-- `final_book.pdf`: Compiled book manuscript PDF (`pdflatex` if installed, or built-in pure-Python multi-page PDF fallback)
-- `final_book.tex`: Complete compilable LaTeX book manuscript
+- `final_book.pdf`: Publication-grade book manuscript PDF compiled via `pdflatex` (`-no-shell-escape`) or `tectonic` inside an isolated TeX sandbox
+- `preview_book.pdf`: Non-typeset preview PDF generated only when no TeX engine is installed and `strict_latex=false`
+- `build_manifest.json`: Build metadata recording `render_mode` (`pdflatex`, `tectonic`, or `preview`) and `is_publication_grade`
+- `final_book.tex`: Complete compilable LaTeX book manuscript (with `references.bib` and `figures/` synced at `output_dir` root)
 - `final_book.md`: Clean Markdown book manuscript for Markdown/Pandoc/EPUB workflows
 - `latex_writeup/chapters/ch01_*.tex`, `ch02_*.tex`, ...: Modular chapter-by-chapter LaTeX files
 - `book_continuity_ledger.json`: Tracked glossary terms, chapter titles, code listings, and cross-reference labels

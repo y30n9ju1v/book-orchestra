@@ -38,9 +38,10 @@ Call the `run_workflow` tool with `ScriptPath` pointing to `workflows/book_orche
 - `templates/systems_handbook`: Addison-Wesley / DDIA / Google SRE style deep systems engineering handbook.
 
 ## Generated Outputs in `output_dir`
-- `final_book.pdf`: Compiled book PDF (uses `pdflatex` if installed, or built-in pure-Python multi-page PDF fallback).
-- `final_book.tex`: Full compilable LaTeX book manuscript.
-- `final_book.md`: Clean Markdown book manuscript for Markdown/EPUB/Pandoc publishing toolchains.
+- `final_book.pdf` (when compiled by `pdflatex`/`tectonic`) or `preview_book.pdf` (when no TeX engine is installed and `strict_latex=false`): Generated book PDF
+- `build_manifest.json`: Build metadata recording `render_mode` (`pdflatex`, `tectonic`, or `preview`) and `is_publication_grade`
+- `final_book.tex`: Full compilable LaTeX book manuscript (with `references.bib` and `figures/` in `output_dir`)
+- `final_book.md`: Clean Markdown book manuscript for Markdown/EPUB/Pandoc publishing toolchains
 - `latex_writeup/chapters/ch01_*.tex`, `ch02_*.tex`, ...: Modular per-chapter LaTeX files.
 - `book_continuity_ledger.json`: Tracked glossary terms, chapter titles, and cross-reference labels.
 - `outline.json`: Book Blueprint & Table of Contents.

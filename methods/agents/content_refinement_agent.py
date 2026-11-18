@@ -200,30 +200,33 @@ Respond in JSON format with the following structure:
             return inspect_book_layout_issues(self.current_tex, cwd=self.work_dir)
 
     def _extract_scores(self, review: dict) -> dict:
-        """Extracts numerical scores from both book-native and legacy review axes."""
-        axes = [
+        """Extracts numerical scores using strictly the 6 non-overlapping book-native axes (plus Overall/Confidence)."""
+        book_axes = [
             "Technical_Depth",
             "Practical_Utility",
             "Code_and_Architecture_Quality",
             "Pedagogical_Clarity",
             "Structural_Coherence",
             "Editorial_Polish",
-            "Originality",
-            "Quality",
-            "Clarity",
-            "Significance",
-            "Soundness",
-            "Presentation",
-            "Contribution",
             "Overall",
             "Confidence",
         ]
+        legacy_fallback = {
+            "Technical_Depth": "Originality",
+            "Code_and_Architecture_Quality": "Quality",
+            "Pedagogical_Clarity": "Clarity",
+            "Practical_Utility": "Significance",
+            "Structural_Coherence": "Soundness",
+            "Editorial_Polish": "Presentation",
+        }
         scores = {}
-        for axis in axes:
-            if axis in review:
-                val = review.get(axis, 0)
+        for axis in book_axes:
+            raw_val = review.get(axis)
+            if raw_val is None and axis in legacy_fallback:
+                raw_val = review.get(legacy_fallback[axis])
+            if raw_val is not None:
                 try:
-                    scores[axis] = float(val)
+                    scores[axis] = float(raw_val)
                 except (ValueError, TypeError):
                     scores[axis] = 0.0
         if "Overall" not in scores:
@@ -601,15 +604,51 @@ block.
                     self.work_dir, candidate_pdf_path, candidate_tex_name
                 )
 
-                if compiled_fmt_ok and os.path.exists(candidate_pdf_path):
-                    print(f" >> Formatting iteration {fmt_i+1} compiled successfully.")
-                    self.current_tex = new_tex
-                    final_valid_pdf_path = candidate_pdf_path
+                def _count_layout_issues(diag_dict: dict) -> int:
+                    cnt = sum(
+                        1
+                        for v in (diag_dict.get("figure_and_tables") or {}).values()
+                        if isinstance(v, dict)
+                        and str(v.get("detected_issue", "none")).lower() != "none"
+                    )
+                    cnt += sum(
+                        1
+                        for x in (diag_dict.get("other_issues") or [])
+                        if (isinstance(x, dict) and str(x.get("detected_issue", "none")).lower() != "none")
+                        or (isinstance(x, str) and x.lower() != "none")
+                    )
+                    return cnt
 
-                    log_entry = {
-                        "outcome": "ACCEPTED_COMPILE_SUCCESS",
-                        "formatting_feedback": formatting_review,
-                    }
+                if compiled_fmt_ok and os.path.exists(candidate_pdf_path):
+                    before_diag = inspect_book_layout_issues(self.current_tex, cwd=self.work_dir)
+                    after_diag = inspect_book_layout_issues(new_tex, cwd=self.work_dir)
+                    before_cnt = _count_layout_issues(before_diag)
+                    after_cnt = _count_layout_issues(after_diag)
+
+                    if after_cnt <= before_cnt:
+                        print(
+                            f" >> Formatting iteration {fmt_i+1} verified (layout issues: {before_cnt} -> {after_cnt})."
+                        )
+                        self.current_tex = new_tex
+                        final_valid_pdf_path = candidate_pdf_path
+                        log_entry = {
+                            "outcome": "ACCEPTED_VERIFIED",
+                            "issues_before": before_cnt,
+                            "issues_after": after_cnt,
+                            "formatting_feedback": formatting_review,
+                            "post_formatting_diagnostics": after_diag,
+                        }
+                    else:
+                        print(
+                            f" >> Formatting iteration {fmt_i+1} introduced layout issues ({before_cnt} -> {after_cnt}). Rejecting."
+                        )
+                        log_entry = {
+                            "outcome": "REJECTED_LAYOUT_REGRESSION",
+                            "issues_before": before_cnt,
+                            "issues_after": after_cnt,
+                            "formatting_feedback": formatting_review,
+                            "post_formatting_diagnostics": after_diag,
+                        }
                     self.format_worklogs[f"v{fmt_i+1}"] = log_entry
                 else:
                     print(

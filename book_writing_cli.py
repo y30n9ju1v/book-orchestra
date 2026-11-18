@@ -82,8 +82,8 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
     parser.add_argument(
         "--use_plotting",
         type=lambda x: (str(x).lower() in ["true", "1", "yes"]),
-        default=False,
-        help="Enable Technical Illustration & Benchmark Plotting agent workflow.",
+        default=True,
+        help="Enable Technical Illustration & Benchmark Plotting agent workflow (default: True).",
     )
     parser.add_argument(
         "--plotting_model_name",
@@ -104,8 +104,13 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
     parser.add_argument(
         "--max_reflections",
         type=int,
-        default=3,
+        default=2,
         help="Maximum number of 3-Persona Editorial Review Board refinement rounds.",
+    )
+    parser.add_argument(
+        "--strict_latex",
+        action="store_true",
+        help="Require a real LaTeX compiler (pdflatex/tectonic); fail instead of writing a preview PDF.",
     )
     parser.add_argument(
         "--emit_workflow_only",
@@ -119,7 +124,13 @@ def main(argv=None):
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    if args.research_cutoff is None:
+    if not args.research_cutoff or str(args.research_cutoff).strip().lower() in (
+        "current",
+        "auto",
+        "latest",
+        "none",
+        "null",
+    ):
         args.research_cutoff = datetime.now().strftime("%Y-%m")
 
     if not os.path.exists(args.raw_materials_dir):
@@ -134,13 +145,24 @@ def main(argv=None):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_dir = f"./book_output_{timestamp}"
 
-    os.makedirs(base_dir, exist_ok=True)
+    from utils.path_security import prepare_safe_output_workspace
 
-    target_raw_materials = os.path.join(base_dir, "raw_materials")
-    if os.path.abspath(target_raw_materials) != os.path.abspath(args.raw_materials_dir):
-        if os.path.exists(target_raw_materials):
-            shutil.rmtree(target_raw_materials)
-        shutil.copytree(args.raw_materials_dir, target_raw_materials)
+    try:
+        (
+            _,
+            _,
+            resolved_base,
+            _,
+            _,
+        ) = prepare_safe_output_workspace(
+            raw_materials_dir=args.raw_materials_dir,
+            latex_template_dir=args.latex_template_dir,
+            output_dir=base_dir,
+        )
+        base_dir = str(resolved_base)
+    except ValueError as err:
+        print(f"❌ Unsafe workspace path configuration: {err}", file=sys.stderr)
+        sys.exit(1)
 
     import json
     from utils.agent_runtime_utils import (
@@ -165,6 +187,7 @@ def main(argv=None):
             "use_plotting": args.use_plotting,
             "max_reflections": args.max_reflections,
             "research_cutoff": args.research_cutoff,
+            "strict_latex": args.strict_latex,
             "model": args.writer_model_name,
             "writer_model_name": args.writer_model_name,
             "reflection_model_name": args.reflection_model_name,
@@ -217,46 +240,28 @@ def main(argv=None):
             )
             print("=" * 80 + "\n")
 
-    if args.use_plotting:
-        from methods.book_writer_with_plotting import write_single_book
+    from methods.agy_workflow_runner import run_book_orchestra_sync
 
-        print(f"🚀 Starting Technical Book Generation (WITH DIAGRAMS/PLOTTING) in {base_dir}")
-        success = write_single_book(
-            base_dir=base_dir,
-            latex_template_dir=args.latex_template_dir,
-            idea_filename=args.proposal_filename,
-            experimental_log_filename=args.technical_notes_filename,
-            writer_model_name=args.writer_model_name,
-            reflection_model_name=args.reflection_model_name,
-            plotting_model_name=args.plotting_model_name,
-            image_model_name=args.image_model_name,
-            research_cutoff=args.research_cutoff,
-            plotting_max_critic_rounds=args.plotting_max_critic_rounds,
-            target_audience=args.target_audience,
-            book_style=args.book_style,
-            max_reflections=args.max_reflections,
-        )
-    else:
-        from methods.book_writer import write_single_book
+    print(
+        f"🚀 Starting Unified BookOrchestra Pipeline (use_plotting={args.use_plotting}, strict_latex={args.strict_latex}) in {base_dir}"
+    )
+    try:
+        result = run_book_orchestra_sync(workflow_payload["Args"])
+    except Exception as exc:
+        print(f"❌ Book generation failed: {exc}", file=sys.stderr)
+        sys.exit(1)
 
-        print(f"🚀 Starting Technical Book Generation (WITHOUT PLOTTING) in {base_dir}")
-        success = write_single_book(
-            base_dir=base_dir,
-            latex_template_dir=args.latex_template_dir,
-            idea_filename=args.proposal_filename,
-            experimental_log_filename=args.technical_notes_filename,
-            writer_model_name=args.writer_model_name,
-            reflection_model_name=args.reflection_model_name,
-            research_cutoff=args.research_cutoff,
-            target_audience=args.target_audience,
-            book_style=args.book_style,
-            max_reflections=args.max_reflections,
-        )
-
-    final_pdf_path = os.path.join(base_dir, "final_book.pdf")
-    if not success or not os.path.exists(final_pdf_path):
+    delivered_pdf = result.get("delivered_pdf") if isinstance(result, dict) else None
+    if not delivered_pdf or not os.path.exists(delivered_pdf):
         print(
-            f"❌ Book generation failed (final_book.pdf missing or pipeline returned False). Output dir: {base_dir}",
+            f"❌ Book generation failed (no PDF delivered). Output dir: {base_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.strict_latex and not result.get("is_publication_grade", False):
+        print(
+            f"❌ Strict LaTeX publish mode failed: only preview PDF was produced.",
             file=sys.stderr,
         )
         sys.exit(1)

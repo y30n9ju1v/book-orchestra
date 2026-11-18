@@ -51,9 +51,14 @@
         "default": 2
       },
       "research_cutoff": {
-        "type": "string",
-        "description": "YYYY-MM cutoff date for technical reference synthesis.",
-        "default": "2026-11"
+        "type": ["string", "null"],
+        "description": "YYYY-MM cutoff date for technical reference synthesis, or null/'current' for runtime current month.",
+        "default": null
+      },
+      "strict_latex": {
+        "type": "boolean",
+        "description": "Require a real LaTeX compiler (pdflatex/tectonic); fail instead of outputting preview_book.pdf.",
+        "default": false
       },
       "model": {
         "type": "string",

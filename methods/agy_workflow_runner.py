@@ -81,10 +81,18 @@ from utils.diagram_plot_utils import (
 )
 from utils.pdf_utils import (
     compile_latex,
+    get_last_compile_mode,
     latex_to_markdown,
     load_book,
     pdf_to_grid_images,
     inspect_book_layout_issues,
+)
+from utils.path_security import (
+    detect_media_format,
+    prepare_safe_output_workspace,
+    resolve_safe_child_path,
+    safe_prepare_managed_subdir,
+    sanitize_slug,
 )
 from utils.reference_verifier import (
     is_reference_before_cutoff,
@@ -335,10 +343,13 @@ async def run_book_orchestra_workflow(
         "book_style", "Practical Architecture & Production Engineering"
     )
     use_plotting = bool(workflow_args.get("use_plotting", True))
+    strict_latex = bool(workflow_args.get("strict_latex", False))
     max_reflections = int(workflow_args.get("max_reflections", 2))
-    research_cutoff = workflow_args.get(
-        "research_cutoff", datetime.datetime.now().strftime("%Y-%m")
-    )
+    raw_cutoff = workflow_args.get("research_cutoff")
+    if not raw_cutoff or str(raw_cutoff).strip().lower() in ("current", "auto", "latest", "none", "null"):
+        research_cutoff = datetime.datetime.now().strftime("%Y-%m")
+    else:
+        research_cutoff = str(raw_cutoff).strip()
     model_tier = workflow_args.get(
         "writer_model_name", workflow_args.get("model", "inherit")
     )
@@ -359,23 +370,26 @@ async def run_book_orchestra_workflow(
         if os.path.isabs(template_rel)
         else os.path.join(_WORK_ROOT, template_rel)
     )
-    base_dir = (
+    base_dir_arg = (
         output_rel
         if os.path.isabs(output_rel)
         else os.path.join(_WORK_ROOT, output_rel)
     )
 
-    os.makedirs(base_dir, exist_ok=True)
-    target_raw_dir = os.path.join(base_dir, "raw_materials")
-    if os.path.abspath(target_raw_dir) != os.path.abspath(raw_materials_dir):
-        if os.path.exists(target_raw_dir):
-            shutil.rmtree(target_raw_dir)
-        shutil.copytree(raw_materials_dir, target_raw_dir)
-
-    latex_writeup_dir = os.path.join(base_dir, "latex_writeup")
-    if os.path.exists(latex_writeup_dir):
-        shutil.rmtree(latex_writeup_dir)
-    shutil.copytree(latex_template_dir, latex_writeup_dir, dirs_exist_ok=True)
+    (
+        _,
+        _,
+        base_path,
+        target_raw_path,
+        latex_writeup_path,
+    ) = prepare_safe_output_workspace(
+        raw_materials_dir=raw_materials_dir,
+        latex_template_dir=latex_template_dir,
+        output_dir=base_dir_arg,
+    )
+    base_dir = str(base_path)
+    target_raw_dir = str(target_raw_path)
+    latex_writeup_dir = str(latex_writeup_path)
 
     figures_dir = os.path.join(latex_writeup_dir, "figures")
     os.makedirs(figures_dir, exist_ok=True)
@@ -625,16 +639,16 @@ async def run_book_orchestra_workflow(
         )
 
         async def _generate_single_visual(fig_plan: dict) -> dict:
-            fig_id = (
-                fig_plan.get("figure_id", "fig_architecture")
-                .replace(" ", "_")
-                .lower()
+            fig_id = sanitize_slug(
+                fig_plan.get("figure_id", "fig_architecture"),
+                default="fig_architecture",
             )
             title = fig_plan.get("title", fig_id)
             plot_type = fig_plan.get("plot_type", "diagram").lower()
             objective = fig_plan.get("objective", "")
             img_rel = f"figures/{fig_id}.jpg"
-            img_abs = os.path.join(latex_writeup_dir, img_rel)
+            img_abs_path = resolve_safe_child_path(figures_dir, f"{fig_id}.jpg")
+            img_abs = str(img_abs_path)
             os.makedirs(os.path.dirname(img_abs), exist_ok=True)
 
             if "plot" in plot_type or "chart" in plot_type:
@@ -688,12 +702,13 @@ async def run_book_orchestra_workflow(
                     fh.write(base64.b64decode(b64_img))
             else:
                 diag_spec = f"Title: {title}\nObjective: {objective}\nArchitecture Context:\n{proposal_text}"
-                for critic_round in range(max(1, plotting_max_critic_rounds)):
+                saved_valid_img = False
+                for _critic_round in range(max(1, plotting_max_critic_rounds)):
                     diag_prompt = (
                         f"{DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT}\n\n"
                         f"Generate a crisp white-background technical architecture diagram for:\n"
                         f"{diag_spec}\n\n"
-                        f"Save or return the image path."
+                        f"Return base64-encoded PNG/JPEG image bytes (never reference host paths outside this workspace)."
                     )
                     try:
                         diag_resp = await agent_fn(
@@ -702,13 +717,45 @@ async def run_book_orchestra_workflow(
                             role=f"Architecture Illustrator: {fig_id}",
                             type_name=image_model_name,
                         )
-                        cand_path = str(diag_resp).strip()
-                        if os.path.exists(cand_path) and os.path.isfile(cand_path):
-                            shutil.copy(cand_path, img_abs)
+                        raw_bytes = None
+                        if isinstance(diag_resp, bytes):
+                            raw_bytes = diag_resp
+                        elif isinstance(diag_resp, dict) and diag_resp.get("image_base64"):
+                            raw_bytes = base64.b64decode(diag_resp["image_base64"])
+                        elif isinstance(diag_resp, str):
+                            stripped = diag_resp.strip()
+                            # Strictly disallow copying arbitrary host filesystem paths; only decode image bytes
+                            # or read artifacts strictly staged inside figures_dir itself.
+                            try:
+                                cand_resolved = resolve_safe_child_path(
+                                    figures_dir, os.path.basename(stripped)
+                                )
+                                if (
+                                    os.path.isabs(stripped)
+                                    and os.path.abspath(stripped) == str(cand_resolved)
+                                    and cand_resolved.is_file()
+                                ):
+                                    with open(cand_resolved, "rb") as rf:
+                                        raw_bytes = rf.read()
+                            except ValueError:
+                                raw_bytes = None
+
+                            if raw_bytes is None and len(stripped) > 64 and "\n" not in stripped and "/" not in stripped[:16]:
+                                try:
+                                    b64_payload = stripped.split(",", 1)[-1]
+                                    raw_bytes = base64.b64decode(b64_payload, validate=True)
+                                except Exception:
+                                    raw_bytes = None
+
+                        if raw_bytes and detect_media_format(raw_bytes) in (".png", ".jpg"):
+                            with open(img_abs, "wb") as fh:
+                                fh.write(raw_bytes)
+                            saved_valid_img = True
                             break
                     except Exception:
                         pass
-                if not os.path.exists(img_abs) or os.path.getsize(img_abs) == 0:
+
+                if not saved_valid_img or not os.path.exists(img_abs) or os.path.getsize(img_abs) == 0:
                     with open(img_abs, "wb") as fh:
                         fh.write(
                             base64.b64decode(
@@ -811,9 +858,13 @@ async def run_book_orchestra_workflow(
     # PHASE 4: 3-Persona Editorial Review Board & Typesetting QA
     # =========================================================================
     phase_fn("4. 3-Persona Editorial Review Board & Typesetting QA")
-    refinement_workdir = os.path.join(base_dir, "content_refinement_workdir")
-    if os.path.exists(refinement_workdir):
-        shutil.rmtree(refinement_workdir)
+    from pathlib import Path
+
+    refinement_workdir = str(
+        safe_prepare_managed_subdir(
+            Path(base_dir) / "content_refinement_workdir", role="refinement_workdir"
+        )
+    )
     shutil.copytree(latex_writeup_dir, refinement_workdir, dirs_exist_ok=True)
     os.makedirs(os.path.join(refinement_workdir, "peer_reviews"), exist_ok=True)
 
@@ -1060,14 +1111,40 @@ async def run_book_orchestra_workflow(
         polished_tex, set(citation_map.keys())
     )
 
-    # Validate & compile the polished candidate before accepting it
+    # Validate & compile the polished candidate and re-verify layout diagnostics via pipeline_fn
     candidate_fmt_tex = os.path.join(refinement_workdir, "formatted_candidate_v1.tex")
     candidate_fmt_pdf = os.path.join(refinement_workdir, "formatted_candidate_v1.pdf")
     with open(candidate_fmt_tex, "w", encoding="utf-8") as f:
         f.write(polished_tex)
+
+    def _count_issues(diag: dict) -> int:
+        c = sum(
+            1
+            for v in (diag.get("figure_and_tables") or {}).values()
+            if isinstance(v, dict)
+            and str(v.get("detected_issue", "none")).lower() != "none"
+        )
+        c += sum(
+            1
+            for x in (diag.get("other_issues") or [])
+            if (isinstance(x, dict) and str(x.get("detected_issue", "none")).lower() != "none")
+            or (isinstance(x, str) and x.lower() != "none")
+        )
+        return c
+
     if compile_latex(refinement_workdir, candidate_fmt_pdf, "formatted_candidate_v1"):
-        current_tex = polished_tex
-        final_valid_pdf_path = candidate_fmt_pdf
+        after_layout = inspect_book_layout_issues(polished_tex, cwd=refinement_workdir)
+        if _count_issues(after_layout) <= _count_issues(layout_diagnostics):
+            current_tex = polished_tex
+            final_valid_pdf_path = candidate_fmt_pdf
+            fmt_after_dir = os.path.join(
+                refinement_workdir, "pdf_screenshots", "format_refinement", "v1"
+            )
+            pdf_to_grid_images(candidate_fmt_pdf, fmt_after_dir)
+        else:
+            log_fn(
+                "Typesetting QA candidate introduced layout issues; keeping previous manuscript."
+            )
     else:
         log_fn(
             "Typesetting QA candidate failed LaTeX compilation; keeping last valid manuscript."
@@ -1079,19 +1156,37 @@ async def run_book_orchestra_workflow(
     with open(final_refined_tex, "w", encoding="utf-8") as f:
         f.write(current_tex)
     final_compiled = compile_latex(
-        refinement_workdir, final_refined_pdf, "final_refined_book"
+        refinement_workdir,
+        final_refined_pdf,
+        "final_refined_book",
+        strict_latex=strict_latex,
     )
+    render_mode = get_last_compile_mode()
     if not final_compiled or not os.path.exists(final_refined_pdf):
-        if os.path.exists(final_valid_pdf_path):
-            shutil.copy(final_valid_pdf_path, final_refined_pdf)
-        else:
-            raise RuntimeError("Final book manuscript failed LaTeX compilation.")
+        if strict_latex or not os.path.exists(final_valid_pdf_path):
+            raise RuntimeError(
+                f"Final book manuscript failed LaTeX compilation (strict_latex={strict_latex}, mode={render_mode})."
+            )
+        shutil.copy(final_valid_pdf_path, final_refined_pdf)
+        render_mode = "preview"
 
+    is_publication_grade = render_mode in ("pdflatex", "tectonic")
     final_book_pdf = os.path.join(base_dir, "final_book.pdf")
+    preview_book_pdf = os.path.join(base_dir, "preview_book.pdf")
     final_book_tex = os.path.join(base_dir, "final_book.tex")
     final_book_md = os.path.join(base_dir, "final_book.md")
+    manifest_path = os.path.join(base_dir, "build_manifest.json")
 
-    shutil.copy(final_refined_pdf, final_book_pdf)
+    # Ensure stale final_book.pdf from earlier runs does not mislead users on preview-only builds
+    if is_publication_grade:
+        shutil.copy(final_refined_pdf, final_book_pdf)
+        delivered_pdf = final_book_pdf
+    else:
+        if os.path.exists(final_book_pdf):
+            os.remove(final_book_pdf)
+        shutil.copy(final_refined_pdf, preview_book_pdf)
+        delivered_pdf = preview_book_pdf
+
     with open(final_book_tex, "w", encoding="utf-8") as f:
         f.write(current_tex)
     shutil.copy(final_book_tex, os.path.join(latex_writeup_dir, "main.tex"))
@@ -1105,27 +1200,147 @@ async def run_book_orchestra_workflow(
     if os.path.exists(src_figs) and os.path.abspath(src_figs) != os.path.abspath(dst_figs):
         shutil.copytree(src_figs, dst_figs, dirs_exist_ok=True)
 
-    md_content = latex_to_markdown(current_tex)
-    with open(final_book_md, "w", encoding="utf-8") as f:
-        f.write(md_content)
+    # Final staged export & verification pipeline via pipeline_fn
+    async def _finalize_stage(stage_name: str):
+        if stage_name == "markdown_export":
+            md_content = latex_to_markdown(current_tex)
+            with open(final_book_md, "w", encoding="utf-8") as f:
+                f.write(md_content)
+            return final_book_md
+        if stage_name == "chapter_and_ledger_sync":
+            chapters = _export_modular_chapters(current_tex, latex_writeup_dir)
+            _update_continuity_ledger(continuity_ledger, current_tex, chapters)
+            with open(
+                os.path.join(base_dir, "book_continuity_ledger.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(continuity_ledger, f, indent=4, ensure_ascii=False)
+            return chapters
+        if stage_name == "build_manifest":
+            manifest = {
+                "render_mode": render_mode,
+                "is_publication_grade": is_publication_grade,
+                "delivered_pdf": os.path.basename(delivered_pdf),
+                "final_book_tex": os.path.basename(final_book_tex),
+                "final_book_md": os.path.basename(final_book_md),
+                "research_cutoff": research_cutoff,
+                "strict_latex": strict_latex,
+            }
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=4, ensure_ascii=False)
+            return manifest
+        return None
 
-    # Re-export modular chapters from final refined manuscript and update continuity ledger
-    final_chapters = _export_modular_chapters(current_tex, latex_writeup_dir)
-    _update_continuity_ledger(continuity_ledger, current_tex, final_chapters)
-    with open(
-        os.path.join(base_dir, "book_continuity_ledger.json"), "w", encoding="utf-8"
-    ) as f:
-        json.dump(continuity_ledger, f, indent=4, ensure_ascii=False)
+    pipeline_outputs = await pipeline_fn(
+        ["markdown_export", "chapter_and_ledger_sync", "build_manifest"],
+        _finalize_stage,
+    )
+    final_chapters = (
+        pipeline_outputs[1]
+        if isinstance(pipeline_outputs, list) and len(pipeline_outputs) > 1
+        else _export_modular_chapters(current_tex, latex_writeup_dir)
+    )
+
+    result_status = "success" if is_publication_grade else "preview"
     log_fn(
-        f"✅ BookOrchestra complete! Final Score: {current_score}/10 | "
-        f"PDF: {final_book_pdf} | Markdown: {final_book_md} | Chapters: {len(final_chapters)}"
+        f"✅ BookOrchestra complete ({result_status}, render_mode={render_mode})! "
+        f"Final Score: {current_score}/10 | PDF: {delivered_pdf} | "
+        f"Markdown: {final_book_md} | Chapters: {len(final_chapters)}"
     )
 
     return {
-        "status": "success",
+        "status": result_status,
+        "render_mode": render_mode,
+        "is_publication_grade": is_publication_grade,
         "final_score": current_score,
-        "final_book_pdf": final_book_pdf,
+        "final_book_pdf": final_book_pdf if is_publication_grade else None,
+        "preview_book_pdf": preview_book_pdf if not is_publication_grade else None,
+        "delivered_pdf": delivered_pdf,
+        "build_manifest": manifest_path,
         "final_book_tex": final_book_tex,
         "final_book_md": final_book_md,
         "chapters": final_chapters,
     }
+
+
+def run_book_orchestra_sync(workflow_args: dict) -> dict:
+    """
+    Synchronous bridge that executes `run_book_orchestra_workflow(...)` using
+    `utils.agent_runtime_utils` so CLI and Streamlit run the exact same core
+    orchestration engine as Antigravity native `run_workflow`.
+    """
+    import asyncio
+    from utils.agent_runtime_utils import (
+        call_agent_with_text_prompt,
+        generate_image_with_agent,
+    )
+
+    def _phase(name: str):
+        print(f"\n=== Phase: {name} ===")
+
+    def _log(*items):
+        print(" ".join(str(x) for x in items))
+
+    async def _agent(
+        prompt: str,
+        schema: dict | None = None,
+        role: str = "Agent",
+        type_name: str = "self",
+        workspace: str = "inherit",
+        model: str | None = None,
+    ):
+        if type_name == "image-generator":
+            return generate_image_with_agent(
+                model_name=model or "image-generator",
+                prompt=prompt,
+            )
+        gen_cfg: dict = {}
+        if schema and schema.get("type") == "object":
+            gen_cfg["response_schema"] = schema
+        if type_name == "research":
+            gen_cfg["tools"] = [{"google_search": {}}]
+
+        parse_fn = (
+            None
+            if (schema and schema.get("type") == "string")
+            else (lambda x: x)
+        )
+        res = await asyncio.to_thread(
+            call_agent_with_text_prompt,
+            prompt=prompt,
+            model_name=model or "inherit",
+            result_parsing_func=parse_fn,
+            generation_configs=gen_cfg,
+            check_parsed_response_not_none=False,
+        )
+        return res.get("raw_response", "")
+
+    async def _parallel(items, fn):
+        async def _eval(item):
+            out = fn(item)
+            if asyncio.iscoroutine(out):
+                return await out
+            return out
+
+        return await asyncio.gather(*(_eval(it) for it in items))
+
+    async def _pipeline(items, fn):
+        outputs = []
+        for item in items:
+            out = fn(item)
+            if asyncio.iscoroutine(out):
+                out = await out
+            outputs.append(out)
+        return outputs
+
+    return asyncio.run(
+        run_book_orchestra_workflow(
+            workflow_args=workflow_args,
+            phase_fn=_phase,
+            log_fn=_log,
+            agent_fn=_agent,
+            parallel_fn=_parallel,
+            pipeline_fn=_pipeline,
+        )
+    )

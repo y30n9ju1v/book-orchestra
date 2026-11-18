@@ -189,6 +189,13 @@ def render_sidebar():
         disabled=st.session_state.locked,
     )
 
+    strict_latex_mode = st.sidebar.checkbox(
+        "Strict LaTeX Publish Mode (require pdflatex/tectonic)",
+        value=False,
+        disabled=st.session_state.locked,
+    )
+    st.session_state.strict_latex_mode = strict_latex_mode
+
     st.sidebar.markdown("Notification Email (optional)")
     email_input = st.sidebar.text_input(
         "Email",
@@ -409,6 +416,10 @@ def handle_live_execution(
                         "image-generator",
                     ]
                 )
+            else:
+                command.extend(["--use_plotting", "False"])
+            if st.session_state.get("strict_latex_mode", False):
+                command.append("--strict_latex")
 
             def run_pipeline(
                 execution_command,
@@ -450,13 +461,33 @@ def handle_live_execution(
                     ) as file_object:
                         file_object.write(log_content)
 
+                    from utils.path_security import (
+                        detect_media_format,
+                        resolve_safe_child_path,
+                        sanitize_upload_filename,
+                    )
+
                     for figure in figures_list:
-                        figure_path = os.path.join(figures_dir, figure["name"])
                         if isinstance(figure["file"], str):
-                            shutil.copy(figure["file"], figure_path)
+                            with open(figure["file"], "rb") as src_f:
+                                raw_fig_bytes = src_f.read()
                         else:
-                            with open(figure_path, "wb") as file_object:
-                                file_object.write(figure["file"].getvalue())
+                            raw_fig_bytes = figure["file"].getvalue()
+
+                        detected_ext = detect_media_format(raw_fig_bytes)
+                        if detected_ext is None:
+                            raise ValueError(
+                                f"Uploaded file '{figure.get('name')}' failed image/PDF content validation."
+                            )
+                        safe_fig_name, _ = sanitize_upload_filename(
+                            figure.get("name", f"figure{detected_ext}"),
+                            fallback_ext=detected_ext,
+                        )
+                        figure_path = str(
+                            resolve_safe_child_path(figures_dir, safe_fig_name)
+                        )
+                        with open(figure_path, "wb") as file_object:
+                            file_object.write(raw_fig_bytes)
 
                     process = subprocess.Popen(
                         execution_command,
@@ -510,11 +541,16 @@ def handle_live_execution(
 
                     run_dir = st.session_state.run_directory
                     final_pdf_path = os.path.join(run_dir, "final_book.pdf")
-                    if process.poll() == 0 and os.path.exists(final_pdf_path):
+                    preview_pdf_path = os.path.join(run_dir, "preview_book.pdf")
+                    delivered_pdf_exists = os.path.exists(final_pdf_path) or (
+                        not st.session_state.get("strict_latex_mode", False)
+                        and os.path.exists(preview_pdf_path)
+                    )
+                    if process.poll() == 0 and delivered_pdf_exists:
                         st.session_state.current_step = len(steps_list)
                         if recipient_email:
                             attachments = []
-                            for fname in ("final_book.pdf", "final_book.md"):
+                            for fname in ("final_book.pdf", "preview_book.pdf", "final_book.md", "build_manifest.json"):
                                 fpath = os.path.join(run_dir, fname)
                                 if os.path.exists(fpath):
                                     attachments.append(fpath)
@@ -802,26 +838,51 @@ else:
 
         if not st.session_state.running and st.session_state.get("run_directory"):
             pdf_path = os.path.join(st.session_state.run_directory, "final_book.pdf")
+            preview_path = os.path.join(st.session_state.run_directory, "preview_book.pdf")
+            manifest_path = os.path.join(st.session_state.run_directory, "build_manifest.json")
             md_path = os.path.join(st.session_state.run_directory, "final_book.md")
             latex_directory = os.path.join(
                 st.session_state.run_directory, "latex_writeup"
             )
 
+            render_mode = "unknown"
+            if os.path.exists(manifest_path):
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as mf:
+                        render_mode = json.load(mf).get("render_mode", "unknown")
+                except Exception:
+                    pass
+
+            if render_mode == "preview" or (not os.path.exists(pdf_path) and os.path.exists(preview_path)):
+                st.warning(
+                    "⚠️ No LaTeX engine (`pdflatex`/`tectonic`) was available; generated a **preview PDF** (`preview_book.pdf`) instead of a publication-typeset `final_book.pdf`."
+                )
+
+            active_pdf_path = pdf_path if os.path.exists(pdf_path) else preview_path
+            active_pdf_name = (
+                "final_book.pdf" if os.path.exists(pdf_path) else "preview_book.pdf"
+            )
+            active_pdf_label = (
+                "📄 Download Final Book PDF"
+                if os.path.exists(pdf_path)
+                else "📄 Download Preview PDF (Non-LaTeX)"
+            )
+
             if (
-                os.path.exists(pdf_path)
+                os.path.exists(active_pdf_path)
                 or os.path.exists(md_path)
                 or os.path.exists(latex_directory)
             ):
                 st.markdown("### 📥 Download Published Outputs")
                 col_dl_1, col_dl_2, col_dl_3 = st.columns(3)
 
-                if os.path.exists(pdf_path):
-                    with open(pdf_path, "rb") as file_object:
+                if os.path.exists(active_pdf_path):
+                    with open(active_pdf_path, "rb") as file_object:
                         with col_dl_1:
                             st.download_button(
-                                label="📄 Download Final Book PDF",
+                                label=active_pdf_label,
                                 data=file_object.read(),
-                                file_name="final_book.pdf",
+                                file_name=active_pdf_name,
                                 mime="application/pdf",
                                 key="download_final_pdf_tab",
                             )

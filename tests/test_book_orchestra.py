@@ -459,7 +459,11 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
                 )
 
             self.assertTrue(success)
-            self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.pdf")))
+            self.assertTrue(os.path.exists(os.path.join(tmpdir, "build_manifest.json")))
+            with open(os.path.join(tmpdir, "build_manifest.json"), "r", encoding="utf-8") as mf:
+                manifest = json.load(mf)
+            delivered = os.path.join(tmpdir, manifest["delivered_pdf"])
+            self.assertTrue(os.path.exists(delivered))
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.tex")))
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.md")))
             self.assertTrue(
@@ -627,7 +631,9 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
                     os.path.join(tmpdir, "latex_writeup", "figures", "fig_gateway_topology.jpg")
                 )
             )
-            self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.pdf")))
+            with open(os.path.join(tmpdir, "build_manifest.json"), "r", encoding="utf-8") as mf:
+                manifest = json.load(mf)
+            self.assertTrue(os.path.exists(os.path.join(tmpdir, manifest["delivered_pdf"])))
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "final_book.md")))
 
     def test_antigravity_run_workflow_engine_end_to_end(self):
@@ -835,9 +841,10 @@ async def acquire(tokens: int) -> bool:
                 )
             )
 
-            self.assertEqual(res["status"], "success")
+            self.assertIn(res["status"], ("success", "preview"))
             self.assertEqual(len(phases_visited), 4)
-            self.assertTrue(os.path.exists(res["final_book_pdf"]))
+            self.assertTrue(os.path.exists(res["delivered_pdf"]))
+            self.assertTrue(os.path.exists(res["build_manifest"]))
             self.assertTrue(os.path.exists(res["final_book_tex"]))
             self.assertTrue(os.path.exists(res["final_book_md"]))
             self.assertTrue(os.path.exists(os.path.join(out_dir, "references.bib")))
@@ -905,11 +912,11 @@ class TestReviewFixesAndSecurityHardening(unittest.TestCase):
                     )
                 self.assertEqual(cm.exception.code, 1)
 
-            # 3. When write_single_book fails (returns False), CLI exits 1
+            # 3. When unified engine fails, CLI exits 1
             out_fail2 = os.path.join(tmpdir, "out_fail2")
             with (
                 patch("utils.agent_runtime_utils.get_antigravity_agent_runner", return_value=lambda *a, **k: "{}"),
-                patch("methods.book_writer.write_single_book", return_value=False),
+                patch("methods.agy_workflow_runner.run_book_orchestra_sync", side_effect=RuntimeError("boom")),
             ):
                 with self.assertRaises(SystemExit) as cm2:
                     book_writing_cli.main(
@@ -1274,6 +1281,240 @@ Citing an undefined key \cite{MissingKey2099}.
             valid, errs = validate_latex_syntax(bad_cite_tex, cwd=tmpdir)
             self.assertFalse(valid)
             self.assertTrue(any("MissingKey2099" in e for e in errs))
+
+
+class TestProductionHardeningReview(unittest.TestCase):
+    def test_1_latex_command_blocking_and_isolated_sandbox_flags(self):
+        from utils.pdf_utils import compile_latex, validate_latex_syntax
+
+        dangerous_snippets = [
+            r"\documentclass{book}\begin{document}\input{/etc/hosts}\end{document}",
+            r"\documentclass{book}\begin{document}\include{secret}\end{document}",
+            r"\documentclass{book}\begin{document}\write18{id}\end{document}",
+            r"\documentclass{book}\begin{document}\openin1=/etc/passwd\end{document}",
+            r"\documentclass{book}\begin{document}\catcode`\@=11\end{document}",
+        ]
+        for tex in dangerous_snippets:
+            valid, errs = validate_latex_syntax(tex)
+            self.assertFalse(valid, f"Dangerous LaTeX should be blocked: {tex}")
+            self.assertTrue(any("Forbidden LaTeX command" in e for e in errs))
+
+        # Verify pdflatex is invoked inside isolated tempdir with -no-shell-escape & openin_any=p
+        safe_tex = r"\documentclass{book}\begin{document}\chapter{Safe}\end{document}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tex_p = os.path.join(tmpdir, "safe.tex")
+            secret_p = os.path.join(tmpdir, "unrelated_host_secret.txt")
+            pdf_p = os.path.join(tmpdir, "safe.pdf")
+            with open(tex_p, "w", encoding="utf-8") as f:
+                f.write(safe_tex)
+            with open(secret_p, "w", encoding="utf-8") as f:
+                f.write("SECRET")
+
+            recorded_calls = []
+
+            def fake_subproc_run(cmd, cwd=None, env=None, **kw):
+                recorded_calls.append({"cmd": cmd, "cwd": cwd, "env": env})
+                # Confirm cwd is isolated sandbox (NOT tmpdir) and secret file was NOT copied
+                self.assertNotEqual(os.path.abspath(cwd), os.path.abspath(tmpdir))
+                self.assertFalse(os.path.exists(os.path.join(cwd, "unrelated_host_secret.txt")))
+                with open(os.path.join(cwd, "safe.pdf"), "wb") as pf:
+                    pf.write(b"%PDF-1.4\n%%EOF\n")
+
+                class _Proc:
+                    returncode = 0
+                    stdout = "Output written on safe.pdf"
+                    stderr = ""
+
+                return _Proc()
+
+            with (
+                patch("utils.pdf_utils.detect_latex_engine", return_value="pdflatex"),
+                patch("utils.pdf_utils.subprocess.run", side_effect=fake_subproc_run),
+            ):
+                ok = compile_latex(tmpdir, pdf_p, "safe", strict_latex=True)
+                self.assertTrue(ok)
+                self.assertTrue(os.path.exists(pdf_p))
+                self.assertGreaterEqual(len(recorded_calls), 1)
+                self.assertIn("-no-shell-escape", recorded_calls[0]["cmd"])
+                self.assertEqual(recorded_calls[0]["env"].get("openin_any"), "p")
+                self.assertEqual(recorded_calls[0]["env"].get("openout_any"), "p")
+
+    def test_2_workspace_overlap_and_marker_protection(self):
+        from utils.path_security import prepare_safe_output_workspace
+
+        tpl_dir = os.path.join(REPO_ROOT, "templates", "oreilly_style_book")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Case A: input raw_materials lives inside output/raw_materials/book1 while output_dir=output
+            out_dir = os.path.join(tmpdir, "output")
+            nested_raw = os.path.join(out_dir, "raw_materials", "book1")
+            os.makedirs(nested_raw, exist_ok=True)
+            marker_file = os.path.join(nested_raw, "keep_me.md")
+            with open(marker_file, "w", encoding="utf-8") as f:
+                f.write("important proposal")
+
+            with self.assertRaises(ValueError):
+                prepare_safe_output_workspace(nested_raw, tpl_dir, out_dir)
+            # Source file MUST remain untouched!
+            self.assertTrue(os.path.exists(marker_file))
+
+            # Case B: unmanaged pre-existing output/raw_materials without BookOrchestra marker must NOT be deleted
+            separate_raw = os.path.join(tmpdir, "raw_src")
+            os.makedirs(separate_raw, exist_ok=True)
+            with open(os.path.join(separate_raw, "book_proposal.md"), "w", encoding="utf-8") as f:
+                f.write("new proposal")
+            unmanaged_target = os.path.join(out_dir, "raw_materials")
+            os.makedirs(unmanaged_target, exist_ok=True)
+            with open(os.path.join(unmanaged_target, "user_owned.txt"), "w", encoding="utf-8") as f:
+                f.write("do not wipe me")
+
+            with self.assertRaises(ValueError):
+                prepare_safe_output_workspace(separate_raw, tpl_dir, out_dir)
+            self.assertTrue(os.path.exists(os.path.join(unmanaged_target, "user_owned.txt")))
+
+    def test_3_path_traversal_upload_and_image_agent_hardening(self):
+        import base64
+        from utils.path_security import (
+            detect_media_format,
+            resolve_safe_child_path,
+            sanitize_slug,
+            sanitize_upload_filename,
+        )
+
+        # Slug sanitization blocks ../../outside
+        slug = sanitize_slug("../../etc/passwd")
+        self.assertRegex(slug, r"^[a-z0-9_-]+$")
+        self.assertNotIn("..", slug)
+        self.assertNotIn("/", slug)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(ValueError):
+                resolve_safe_child_path(tmpdir, "../../escape.jpg")
+
+            safe_name, ext = sanitize_upload_filename("../../../evil/../diagram.png")
+            self.assertTrue(safe_name.endswith(".png"))
+            self.assertNotIn("..", safe_name)
+            self.assertNotIn("/", safe_name)
+
+        # Image magic bytes detection rejects fake HTML/text disguised as PNG
+        self.assertIsNone(detect_media_format(b"not really a png file"))
+        from utils.agent_runtime_utils import _fallback_diagram_png_base64
+
+        valid_png = base64.b64decode(_fallback_diagram_png_base64(width=16, height=16))
+        self.assertEqual(detect_media_format(valid_png), ".png")
+
+    def test_4_ssrf_blocking_private_metadata_and_redirects(self):
+        from utils.reference_verifier import (
+            _SSRFGuardedRedirectHandler,
+            is_safe_authoritative_url,
+        )
+        import urllib.error
+        import urllib.request
+
+        ssrf_targets = [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/admin",
+            "http://192.168.1.10/internal",
+            "http://127.0.0.1:8080/",
+            "http://[::1]/",
+            "http://localhost/secret",
+        ]
+        for bad_url in ssrf_targets:
+            self.assertFalse(
+                is_safe_authoritative_url(bad_url),
+                f"SSRF target must be rejected: {bad_url}",
+            )
+
+        # Redirect handler blocks redirect to link-local / private IP
+        handler = _SSRFGuardedRedirectHandler()
+        req = urllib.request.Request("https://arxiv.org/abs/2309.06180")
+        with self.assertRaises(urllib.error.URLError):
+            handler.redirect_request(
+                req, None, 302, "Found", {}, "http://169.254.169.254/latest/meta-data/"
+            )
+
+    def test_5_preview_vs_strict_publish_and_tectonic_support(self):
+        from utils.pdf_utils import compile_latex, get_last_compile_mode
+
+        sample_tex = r"\documentclass{book}\begin{document}\chapter{Hello}\end{document}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tex_p = os.path.join(tmpdir, "book.tex")
+            final_p = os.path.join(tmpdir, "final_book.pdf")
+            preview_p = os.path.join(tmpdir, "preview_book.pdf")
+            with open(tex_p, "w", encoding="utf-8") as f:
+                f.write(sample_tex)
+
+            with patch("utils.pdf_utils.detect_latex_engine", return_value=None):
+                # Publish mode MUST fail when no LaTeX engine exists
+                ok_strict = compile_latex(tmpdir, final_p, "book", strict_latex=True)
+                self.assertFalse(ok_strict)
+                self.assertEqual(get_last_compile_mode(), "failed")
+                self.assertFalse(os.path.exists(final_p))
+
+                # Preview mode writes preview_book.pdf and leaves final_book.pdf absent
+                ok_preview = compile_latex(
+                    tmpdir, final_p, "book", strict_latex=False, preview_pdf_file=preview_p
+                )
+                self.assertTrue(ok_preview)
+                self.assertEqual(get_last_compile_mode(), "preview")
+                self.assertTrue(os.path.exists(preview_p))
+                self.assertFalse(os.path.exists(final_p))
+
+    def test_6_7_8_9_unified_cli_defaults_scoring_retries_and_dynamic_cutoff(self):
+        from book_writing_cli import build_arg_parser
+        from methods.agents.content_refinement_agent import ContentRefinementAgent
+        from utils.agent_runtime_utils import call_agent_with_text_prompt, set_antigravity_agent_runner
+
+        # Finding 6 & 9: Unified defaults + dynamic null cutoff in workflow.json
+        parser = build_arg_parser()
+        default_args = parser.parse_args(["--raw_materials_dir", "examples/distributed_llm_systems_book/raw_materials"])
+        self.assertTrue(default_args.use_plotting)
+        self.assertEqual(default_args.max_reflections, 2)
+
+        with open(os.path.join(REPO_ROOT, "workflows", "workflow.json"), "r", encoding="utf-8") as wf_f:
+            wf_json = json.load(wf_f)
+        self.assertIsNone(wf_json["args"]["properties"]["research_cutoff"]["default"])
+        self.assertIn("strict_latex", wf_json["args"]["properties"])
+
+        # Finding 7: _extract_scores must NOT double/triple-count legacy alias axes
+        cra = ContentRefinementAgent.__new__(ContentRefinementAgent)
+        extracted = cra._extract_scores(
+            {
+                "Technical_Depth": 3,
+                "Practical_Utility": 4,
+                "Significance": 4,  # legacy alias of Practical_Utility
+                "Contribution": 4,  # legacy alias of Practical_Utility
+                "Overall": 8,
+            }
+        )
+        self.assertNotIn("Significance", extracted)
+        self.assertNotIn("Contribution", extracted)
+        self.assertEqual(extracted["Practical_Utility"], 4.0)
+
+        # Finding 8: Retry logic actually retries transient failures up to max_retries
+        calls = {"n": 0}
+
+        def flaky_runner(**kw):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise RuntimeError("transient glitch")
+            return '```json\n{"ok": true}\n```'
+
+        set_antigravity_agent_runner(flaky_runner)
+        try:
+            res = call_agent_with_text_prompt("hi", max_retries=3, base_interval_sec=0)
+            self.assertEqual(res["parsed_response"], {"ok": True})
+            self.assertEqual(calls["n"], 2)
+        finally:
+            set_antigravity_agent_runner(None)
+
+        # Finding 8: Packaging & CI files exist with pinned bounds
+        self.assertTrue(os.path.exists(os.path.join(REPO_ROOT, "pyproject.toml")))
+        self.assertTrue(os.path.exists(os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")))
+        with open(os.path.join(REPO_ROOT, "requirements.txt"), "r", encoding="utf-8") as req_f:
+            reqs = req_f.read()
+        self.assertNotIn("joblib", reqs)
+        self.assertNotIn("pyOpenSSL", reqs)
+        self.assertIn(">=", reqs)
 
 
 if __name__ == "__main__":

@@ -55,10 +55,24 @@ def _finalize_book_artifacts(
     refinement_workdir: str,
     refined_pdf_path: str,
     section_writing_agent: SectionWritingAgent,
+    strict_latex: bool = False,
 ):
-    """Saves final_book.pdf, self-contained final_book.tex (+ references.bib & figures/), final_book.md, modular chapters, and updated continuity ledger."""
+    """Saves delivered PDF (`final_book.pdf` or `preview_book.pdf`), `build_manifest.json`, self-contained `final_book.tex`, `final_book.md`, modular chapters, and updated continuity ledger."""
+    from utils.pdf_utils import get_last_compile_mode
+
+    render_mode = get_last_compile_mode()
+    is_publication_grade = render_mode in ("pdflatex", "tectonic")
     final_book_pdf = osp.join(base_dir, "final_book.pdf")
-    shutil.copy(refined_pdf_path, final_book_pdf)
+    preview_book_pdf = osp.join(base_dir, "preview_book.pdf")
+
+    if is_publication_grade:
+        shutil.copy(refined_pdf_path, final_book_pdf)
+        delivered_pdf = final_book_pdf
+    else:
+        if os.path.exists(final_book_pdf):
+            os.remove(final_book_pdf)
+        shutil.copy(refined_pdf_path, preview_book_pdf)
+        delivered_pdf = preview_book_pdf
 
     # Sync references.bib and figures/ to base_dir so final_book.tex is self-contained
     src_bib = osp.join(latex_writeup_dir, "references.bib")
@@ -104,6 +118,20 @@ def _finalize_book_artifacts(
                 ensure_ascii=False,
             )
 
+    manifest_path = osp.join(base_dir, "build_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "render_mode": render_mode,
+                "is_publication_grade": is_publication_grade,
+                "delivered_pdf": osp.basename(delivered_pdf),
+                "strict_latex": strict_latex,
+            },
+            f,
+            indent=4,
+            ensure_ascii=False,
+        )
+
 
 def write_single_book(
     base_dir,
@@ -112,11 +140,15 @@ def write_single_book(
     experimental_log_filename="technical_notes.md",
     writer_model_name: str = "inherit",
     reflection_model_name: str = "inherit",
-    research_cutoff: str = "2026-11",
+    research_cutoff: str = None,
     target_audience: str = "Senior Software & Systems Engineers",
     book_style: str = "Practical Architecture & Production Engineering",
-    max_reflections: int = 3,
+    max_reflections: int = 2,
 ):
+    from datetime import datetime
+
+    if not research_cutoff or str(research_cutoff).strip().lower() in ("current", "auto", "latest", "none", "null"):
+        research_cutoff = datetime.now().strftime("%Y-%m")
     latex_writeup_dir = osp.join(base_dir, "latex_writeup")
     pdf_file = osp.join(base_dir, "final_book.pdf")
 
@@ -365,12 +397,16 @@ def run_batch_book_writeup(
     idea_filename: str = "book_proposal.md",
     experimental_log_filename: str = "technical_notes.md",
     writer_model_name: str = "inherit",
-    research_cutoff: str = "2026-11",
+    research_cutoff: str = None,
     target_audience: str = "Senior Software & Systems Engineers",
     book_style: str = "Practical Architecture & Production Engineering",
     n_books: int = -1,
     max_workers: int = 4,
 ):
+    from datetime import datetime
+
+    if not research_cutoff or str(research_cutoff).strip().lower() in ("current", "auto", "latest", "none", "null"):
+        research_cutoff = datetime.now().strftime("%Y-%m")
     if output_dir == "":
         output_dir = create_log_folder(
             prefix=output_dir_prefix, date_str=date_str, log_dir="./logs/book_writing"

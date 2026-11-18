@@ -26,6 +26,7 @@ import os
 import shutil
 import struct
 import subprocess
+import time
 import zlib
 import base64
 from typing import Dict, Any, Callable, Optional, List
@@ -557,7 +558,7 @@ def call_agent_with_contents(
 ):
     """
     Routes content generation through the registered Antigravity workflow agent runner
-    (no external google-genai API key required).
+    with bounded exponential-backoff retries (no external API keys required).
     """
     if generation_configs is None:
         generation_configs = {}
@@ -571,15 +572,42 @@ def call_agent_with_contents(
 
     prompt_text, image_paths, temp_files = _extract_prompt_and_media(contents)
     system_instruction = generation_configs.get("system_instruction")
+    attempts = max(1, int(max_retries or 1))
+    last_error: Optional[Exception] = None
 
     try:
-        raw_response = _antigravity_agent_runner(
-            prompt=prompt_text,
-            system_instruction=system_instruction,
-            model_name=model_name,
-            images=image_paths or None,
-            generation_configs=generation_configs,
-        )
+        for attempt in range(attempts):
+            try:
+                raw_response = _antigravity_agent_runner(
+                    prompt=prompt_text,
+                    system_instruction=system_instruction,
+                    model_name=model_name,
+                    images=image_paths or None,
+                    generation_configs=generation_configs,
+                )
+                parsed_response = (
+                    result_parsing_func(raw_response)
+                    if result_parsing_func is not None
+                    else raw_response
+                )
+
+                if check_parsed_response_not_none and parsed_response is None:
+                    raise ValueError(
+                        f"Parsed response is None. Raw response:\n{raw_response}"
+                    )
+
+                return {
+                    "raw_response": raw_response,
+                    "parsed_response": parsed_response,
+                }
+            except Exception as exc:
+                last_error = exc
+                if attempt < attempts - 1:
+                    delay = max(0.0, float(base_interval_sec)) * (2**attempt)
+                    if delay > 0:
+                        time.sleep(min(delay, 30.0))
+        if last_error is not None:
+            raise last_error
     finally:
         for tf in temp_files:
             try:
@@ -587,21 +615,6 @@ def call_agent_with_contents(
                     os.remove(tf)
             except Exception:
                 pass
-    parsed_response = (
-        result_parsing_func(raw_response)
-        if result_parsing_func is not None
-        else raw_response
-    )
-
-    if check_parsed_response_not_none:
-        assert (
-            parsed_response is not None
-        ), f"Parsed response is None. Raw response:\n{raw_response}"
-
-    return {
-        "raw_response": raw_response,
-        "parsed_response": parsed_response,
-    }
 
 
 def call_agent_with_text_prompt(
@@ -640,24 +653,38 @@ def call_agent_with_images(
 
     if _antigravity_agent_runner is not None:
         system_instruction = generation_configs.get("system_instruction")
-        raw_response = _antigravity_agent_runner(
-            prompt=prompt,
-            system_instruction=system_instruction,
-            model_name=model_name,
-            images=images,
-            generation_configs=generation_configs,
-        )
-        parsed_response = (
-            result_parsing_func(raw_response)
-            if result_parsing_func is not None
-            else raw_response
-        )
-        if check_parsed_response_not_none:
-            assert parsed_response is not None
-        return {
-            "raw_response": raw_response,
-            "parsed_response": parsed_response,
-        }
+        attempts = max(1, int(max_retries or 1))
+        last_error: Optional[Exception] = None
+        for attempt in range(attempts):
+            try:
+                raw_response = _antigravity_agent_runner(
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                    model_name=model_name,
+                    images=images,
+                    generation_configs=generation_configs,
+                )
+                parsed_response = (
+                    result_parsing_func(raw_response)
+                    if result_parsing_func is not None
+                    else raw_response
+                )
+                if check_parsed_response_not_none and parsed_response is None:
+                    raise ValueError(
+                        f"Parsed response is None in call_agent_with_images."
+                    )
+                return {
+                    "raw_response": raw_response,
+                    "parsed_response": parsed_response,
+                }
+            except Exception as exc:
+                last_error = exc
+                if attempt < attempts - 1:
+                    delay = max(0.0, float(base_interval_sec)) * (2**attempt)
+                    if delay > 0:
+                        time.sleep(min(delay, 30.0))
+        if last_error is not None:
+            raise last_error
 
     llm_contents = [types.Part.from_text(text=prompt)]
     for image_path in images or []:

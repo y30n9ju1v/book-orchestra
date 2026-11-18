@@ -1,6 +1,6 @@
 {
   "name": "book-orchestra",
-  "description": "Multi-agent orchestration workflow for authoring, illustrating, reviewing, and typesetting IT & Engineering books natively in Antigravity without external Gemini API keys.",
+  "description": "Multi-agent orchestration workflow for authoring, illustrating, reviewing, and typesetting IT & Engineering books natively in Antigravity without external model-provider API keys.",
   "entry": "book_orchestra_workflow.py",
   "args": {
     "type": "object",

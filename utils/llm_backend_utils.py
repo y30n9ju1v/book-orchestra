@@ -18,11 +18,11 @@ Antigravity LLM & Multimodal dispatch utilities for BookOrchestra.
 
 from typing import Optional, Callable, Dict, Any
 
-from utils.gemini_utils import (
-    call_gemini_with_text_prompt,
-    parse_gemini_json_results,
-    call_gemini_with_contents,
-    call_gemini_with_images,
+from utils.agent_runtime_utils import (
+    call_agent_with_text_prompt,
+    parse_agent_json_response,
+    call_agent_with_contents,
+    call_agent_with_images,
     types,
 )
 
@@ -34,7 +34,7 @@ def identity_parse(response: str):
 def get_llm_parser(model_name: str, return_json: bool = True) -> Callable:
     if not return_json:
         return identity_parse
-    return parse_gemini_json_results
+    return parse_agent_json_response
 
 
 def call_llm_with_text_prompt(
@@ -50,7 +50,7 @@ def call_llm_with_text_prompt(
         if result_parsing_func is not None
         else get_llm_parser(model_name, return_json)
     )
-    return call_gemini_with_text_prompt(
+    return call_agent_with_text_prompt(
         prompt=prompt,
         model_name=model_name,
         generation_configs=generation_configs or {},
@@ -73,7 +73,7 @@ def call_llm_with_images(
         if result_parsing_func is not None
         else get_llm_parser(model_name, return_json)
     )
-    return call_gemini_with_images(
+    return call_agent_with_images(
         prompt=prompt,
         images=images,
         model_name=model_name,
@@ -109,7 +109,7 @@ def call_llm_with_pdf(
     if system_instruction is not None:
         generation_configs["system_instruction"] = system_instruction
 
-    return call_gemini_with_contents(
+    return call_agent_with_contents(
         contents=contents,
         model_name=model_name,
         generation_configs=generation_configs,

@@ -406,7 +406,7 @@ def handle_live_execution(
                         "--plotting_model_name",
                         selected_model,
                         "--image_model_name",
-                        "gemini-3-pro-image-preview",
+                        "image-generator",
                     ]
                 )
 

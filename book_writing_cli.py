@@ -143,7 +143,7 @@ def main(argv=None):
         shutil.copytree(args.raw_materials_dir, target_raw_materials)
 
     import json
-    from utils.gemini_utils import (
+    from utils.agent_runtime_utils import (
         enable_agy_cli_runner,
         get_antigravity_agent_runner,
     )

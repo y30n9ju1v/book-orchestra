@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from utils.pdf_utils import load_book
 from utils.llm_backend_utils import get_llm_parser
-from utils.gemini_utils import call_gemini_with_contents, types
+from utils.agent_runtime_utils import call_agent_with_contents, types
 from autoraters.prompts.sxs_quality_prompts import sxs_book_quality_system_prompt
 
 FILE_LOCK = threading.Lock()
@@ -47,7 +47,7 @@ def rate_sxs_book_quality(
         types.Part.from_text(text="\n\n" + prompt_text),
     ]
 
-    response_dict = call_gemini_with_contents(
+    response_dict = call_agent_with_contents(
         contents=contents,
         model_name=model_name,
         result_parsing_func=get_llm_parser(model_name, return_json=True),

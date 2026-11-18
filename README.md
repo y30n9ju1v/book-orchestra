@@ -15,7 +15,7 @@
 1. **외부 API 키 불필요 — Antigravity `run_workflow` 네이티브 실행**
    - [`workflows/book_orchestra_workflow.py`](workflows/book_orchestra_workflow.py) 및 [`methods/agy_workflow_runner.py`](methods/agy_workflow_runner.py): Antigravity의 `agent()`, `parallel()`, `pipeline()`, `phase()` 프리미티브를 사용해 현재 로그인된 Antigravity 세션 모델과 내장 도구(`research` 웹 검색, `image-generator` 다이어그램 생성)만으로 전체 집필·검수·조판 파이프라인을 실행합니다.
    - 워크스페이스 스킬 [`.agents/skills/book-orchestra/SKILL.md`](.agents/skills/book-orchestra/SKILL.md)가 등록되어 있어, Antigravity 채팅창에서 바로 기술 서적 집필을 요청하면 자동으로 `run_workflow`를 호출합니다.
-   - [`utils/gemini_utils.py`](utils/gemini_utils.py): 외부 REST API 클라이언트(`google.genai`, `openai`)를 제거하고 Antigravity 에이전트 브리지(`set_antigravity_agent_runner`, `enable_agy_cli_runner`)로 대체했습니다.
+   - [`utils/agent_runtime_utils.py`](utils/agent_runtime_utils.py): 외부 REST API 클라이언트(`google.genai`, `openai`)를 제거하고 Antigravity 에이전트 브리지(`set_antigravity_agent_runner`, `enable_agy_cli_runner`)로 대체했습니다.
 2. **이중 블라인드 논문 제약 제거 → 엔지니어링 & 출판 무결성(`TECHNICAL_BOOK_INTEGRITY_PROMPT`) 적용**
    - [`utils/prompt_utils.py`](utils/prompt_utils.py): 익명성·8페이지 학회 제한 대신 **벤치마크/성능 수치의 원천 데이터 근거(Grounding)**, **실행 가능하고 에러 처리가 포함된 프로덕션 코드 작성**, **과장 없는 트레이드오프 및 장애 모드 분석**을 강제합니다.
 3. **전문 출판사 기반 Book Templates (`templates/`)**
@@ -84,5 +84,5 @@ Inside `output_dir`:
 - `templates/`: Publisher LaTeX templates (`oreilly_style_book/`, `manning_in_action_book/`, `systems_handbook/`)
 - `autoraters/`: 3-Persona Editorial Review Board (`agent_review.py`) and SxS book evaluators (`sxs_book_quality.py`)
 - `examples/distributed_llm_systems_book/`: Complete IT/Engineering book proposal and technical benchmark notes
-- `utils/`: Antigravity agent bridge (`gemini_utils.py`), diagram/plot helpers (`diagram_plot_utils.py`), PDF/LaTeX/Markdown utilities (`pdf_utils.py`)
+- `utils/`: Antigravity agent bridge (`agent_runtime_utils.py`), diagram/plot helpers (`diagram_plot_utils.py`), PDF/LaTeX/Markdown utilities (`pdf_utils.py`)
 - `tests/`: Automated unit & end-to-end workflow tests (`test_book_orchestra.py`)

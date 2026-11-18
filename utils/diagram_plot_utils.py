@@ -40,11 +40,11 @@ try:
 except ImportError:
     json_repair = None  # type: ignore
 
-from utils.gemini_utils import (
-    call_gemini_with_text_prompt,
-    call_gemini_with_contents,
-    generate_image_with_gemini,
-    parse_gemini_json_results,
+from utils.agent_runtime_utils import (
+    call_agent_with_text_prompt,
+    call_agent_with_contents,
+    generate_image_with_agent,
+    parse_agent_json_response,
     types,
 )
 
@@ -548,7 +548,7 @@ def generate_figure_caption(
                 data=base64.b64decode(base64_image), mime_type="image/jpeg"
             ),
         ]
-        response_dict = call_gemini_with_contents(
+        response_dict = call_agent_with_contents(
             contents=contents,
             model_name=model_name,
             result_parsing_func=identity_parse,
@@ -556,7 +556,7 @@ def generate_figure_caption(
             check_parsed_response_not_none=True,
         )
     else:
-        response_dict = call_gemini_with_text_prompt(
+        response_dict = call_agent_with_text_prompt(
             prompt=prompt,
             model_name=model_name,
             result_parsing_func=identity_parse,
@@ -594,7 +594,7 @@ def predict_figure_content(
         f"Detailed description:"
     )
 
-    response_dict = call_gemini_with_contents(
+    response_dict = call_agent_with_contents(
         contents=[
             types.Part.from_text(text=system_prompt),
             types.Part.from_text(text=user_prompt),
@@ -622,7 +622,7 @@ def style_figure_content(
         f"Technical Context: {raw_content}\n"
         f"Visual Intent: {description}\nYour Output:"
     )
-    response_dict = call_gemini_with_contents(
+    response_dict = call_agent_with_contents(
         contents=[
             types.Part.from_text(text=system_prompt),
             types.Part.from_text(text=user_prompt),
@@ -661,7 +661,7 @@ def critique_and_revise_figure(
     )
     contents.append(types.Part.from_text(text=user_prompt))
 
-    response_dict = call_gemini_with_contents(
+    response_dict = call_agent_with_contents(
         contents=contents,
         model_name=model_name,
         result_parsing_func=identity_parse,
@@ -676,7 +676,7 @@ def critique_and_revise_figure(
         if json_repair is not None:
             eval_result = json_repair.loads(cleaned_response)
         else:
-            eval_result = parse_gemini_json_results(cleaned_response) or json.loads(
+            eval_result = parse_agent_json_response(cleaned_response) or json.loads(
                 cleaned_response
             )
         if not isinstance(eval_result, dict):
@@ -703,7 +703,7 @@ def generate_figure_visuals(
             f"Use python matplotlib to generate an engineering benchmark plot based on: "
             f"{figure_description}\nOnly provide the code without explanations. Code:"
         )
-        response_dict = call_gemini_with_contents(
+        response_dict = call_agent_with_contents(
             contents=[
                 types.Part.from_text(text=PLOT_VISUALIZER_AGENT_SYSTEM_PROMPT),
                 types.Part.from_text(text=prompt_text),
@@ -717,7 +717,7 @@ def generate_figure_visuals(
             f"Render a technical architecture diagram based on: {figure_description}\n"
             f"Do not include figure titles inside the image."
         )
-        return generate_image_with_gemini(
+        return generate_image_with_agent(
             model_name=image_model_name,
             prompt=prompt_text,
             aspect_ratio=aspect_ratio,

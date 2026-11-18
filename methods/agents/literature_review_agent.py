@@ -59,9 +59,9 @@ except ImportError:
 from methods.prompts.literature_review_agent import (
     literature_review_agent_writter_prompt,
 )
-from utils.gemini_utils import (
-    call_gemini_with_contents,
-    parse_gemini_latex_results,
+from utils.agent_runtime_utils import (
+    call_agent_with_contents,
+    parse_agent_latex_response,
     types,
 )
 from utils.reference_verifier import (
@@ -129,7 +129,7 @@ class HybridLiteratureAgent:
         latex_template_path: str,
         conference_guidelines_path: str,
         output_dir: str,
-        model_name: str = "gemini-3.1-pro-preview",
+        model_name: str = "inherit",
         max_workers: int = 5,
     ):
         self.output_dir = output_dir
@@ -543,8 +543,8 @@ class HybridLiteratureAgent:
             {DiscoveryResult.model_json_schema()}
             """
 
-        response_dict = call_gemini_with_contents(
-            model_name="gemini-3-flash-preview",
+        response_dict = call_agent_with_contents(
+            model_name="flash",
             contents=[prompt],
             generation_configs={
                 "tools": [self.google_search_tool],
@@ -582,11 +582,11 @@ class HybridLiteratureAgent:
             "Generate the LaTeX for the Preface/Introduction and Foundations/Ecosystem Chapter "
             "in template.tex while keeping all downstream chapters untouched."
         )
-        response_dict = call_gemini_with_contents(
+        response_dict = call_agent_with_contents(
             model_name=self.model_name,
             contents=[user_prompt, json.dumps(context_payload)],
             generation_configs={"system_instruction": writer_system_prompt},
-            result_parsing_func=parse_gemini_latex_results,
+            result_parsing_func=parse_agent_latex_response,
         )
         cleaned_latex, _ = audit_and_clean_citations(
             response_dict["parsed_response"], set(paper_keys)

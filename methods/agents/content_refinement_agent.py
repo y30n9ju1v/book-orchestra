@@ -24,10 +24,10 @@ from utils.pdf_utils import (
     inspect_book_layout_issues,
 )
 from utils.reference_verifier import audit_and_clean_citations
-from utils.gemini_utils import (
-    call_gemini_with_contents,
-    parse_gemini_json_latex_response,
-    call_gemini_with_images,
+from utils.agent_runtime_utils import (
+    call_agent_with_contents,
+    parse_agent_json_latex_response,
+    call_agent_with_images,
     types,
 )
 
@@ -44,7 +44,7 @@ class ContentRefinementAgent:
         experimental_log_path: str,
         citation_map_path: str,
         guidelines_path: str,
-        model_name: str = "gemini-3.1-pro-preview",
+        model_name: str = "inherit",
         max_reflections: int = 3,
         work_dir: str = "./book_workspace",
     ):
@@ -170,7 +170,7 @@ Respond in JSON format with the following structure:
 ```
 """
             )
-            response_dict = call_gemini_with_images(
+            response_dict = call_agent_with_images(
                 prompt=prompt,
                 images=image_paths,
                 model_name=self.model_name,
@@ -340,7 +340,7 @@ INSTRUCTION:
 
             print(" >> Calling Editorial Refinement Agent...")
             try:
-                response_dict = call_gemini_with_contents(
+                response_dict = call_agent_with_contents(
                     contents=[
                         types.Part.from_bytes(
                             data=pdf_bytes, mime_type="application/pdf"
@@ -349,7 +349,7 @@ INSTRUCTION:
                     ],
                     generation_configs={"system_instruction": self.system_prompt},
                     model_name=self.model_name,
-                    result_parsing_func=parse_gemini_json_latex_response,
+                    result_parsing_func=parse_agent_json_latex_response,
                 )
 
                 parsed = json.loads(response_dict["parsed_response"])
@@ -540,7 +540,7 @@ INSTRUCTION:
                 print(" >> No critical formatting issues found. Breaking loop.")
                 break
 
-            print(" >> [VLM] Found formatting issues. Calling Gemini to fix...")
+            print(" >> [VLM] Found formatting issues. Calling the agent runtime to fix...")
 
             prompt = f"""You are a Senior Technical Book Production & LaTeX Typesetting Editor. Fix the formatting, code wrapping, table width, callout box, and figure scaling issues identified below.
 You must STRICTLY follow the provided publishing guidelines.
@@ -563,7 +563,7 @@ block.
 """
 
             try:
-                response_dict = call_gemini_with_contents(
+                response_dict = call_agent_with_contents(
                     contents=[
                         types.Part.from_text(text=prompt),
                     ],

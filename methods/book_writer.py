@@ -364,7 +364,7 @@ def run_batch_book_writeup(
     date_str: str = "",
     idea_filename: str = "book_proposal.md",
     experimental_log_filename: str = "technical_notes.md",
-    writer_model_name: str = "gemini-3.1-pro-preview",
+    writer_model_name: str = "inherit",
     research_cutoff: str = "2026-11",
     target_audience: str = "Senior Software & Systems Engineers",
     book_style: str = "Practical Architecture & Production Engineering",

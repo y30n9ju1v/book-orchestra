@@ -30,8 +30,8 @@ from utils.diagram_plot_utils import (
 def process_single_figure(
     fig_plan,
     raw_materials_dir,
-    model_name="gemini-3.1-pro-preview",
-    image_model_name="gemini-3-pro-image-preview",
+    model_name="inherit",
+    image_model_name="image-generator",
     max_critic_rounds=3,
 ):
     print(f"Processing figure: {fig_plan.get('figure_id', 'Unknown')}")
@@ -209,8 +209,8 @@ def process_single_figure(
 class PlottingAgent:
     def __init__(
         self,
-        model_name: str = "gemini-3.1-pro-preview",
-        image_model_name: str = "gemini-3-pro-image-preview",
+        model_name: str = "inherit",
+        image_model_name: str = "image-generator",
         max_critic_rounds: int = 3,
     ):
         self.model_name = model_name

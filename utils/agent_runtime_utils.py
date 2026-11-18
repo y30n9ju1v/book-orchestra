@@ -13,12 +13,11 @@
 # limitations under the License.
 
 """
-Antigravity-native LLM & multimodal bridge for BookOrchestra.
+Antigravity-native agent runtime and multimodal bridge for BookOrchestra.
 
-External `google-genai` API calls (`GEMINI_API_KEY` / `VERTEX_AI_PROJECT`) have been
-replaced with an Antigravity workflow agent bridge so BookOrchestra runs natively
-inside Antigravity via `run_workflow` (`workflows/book_orchestra_workflow.py`)
-without external API keys.
+Provider-specific API calls have been replaced with an Antigravity workflow agent
+bridge so BookOrchestra runs natively inside Antigravity via `run_workflow`
+(`workflows/book_orchestra_workflow.py`) without external model-provider API keys.
 """
 
 import re
@@ -229,7 +228,7 @@ def create_agy_cli_runner(
 ) -> Callable[..., str]:
     """
     Creates an Antigravity CLI (`agy --print`) runner so subprocesses (CLI / Streamlit)
-    can execute prompts through Antigravity without external Gemini API keys.
+    can execute prompts through Antigravity without external model-provider API keys.
     Automatically maps tier aliases ('pro', 'flash', 'flash_lite'), attaches image paths,
     forwards JSON schemas, and enables research grounding when tools are requested.
     """
@@ -392,7 +391,7 @@ def enable_agy_cli_runner(
     return True
 
 
-def parse_gemini_json_results(response: str):
+def parse_agent_json_response(response: str):
     if not response or not isinstance(response, str):
         return None
 
@@ -438,7 +437,7 @@ def parse_gemini_json_results(response: str):
     return None
 
 
-def parse_gemini_latex_results(response: str):
+def parse_agent_latex_response(response: str):
     match = re.search(r"```latex\s*(.*?)\s*```", response.strip(), re.DOTALL)
     if match:
         latex_string = match.group(1)
@@ -447,7 +446,7 @@ def parse_gemini_latex_results(response: str):
     return latex_string
 
 
-def parse_gemini_json_latex_response(response_text: str) -> str:
+def parse_agent_json_latex_response(response_text: str) -> str:
     """
     Extracts the JSON worklog and the LaTeX code from the agent response.
     Returns a JSON-serialized string with keys "json" and "latex".
@@ -547,12 +546,12 @@ def _contents_to_prompt_text(contents: Any) -> str:
     return prompt_text
 
 
-def call_gemini_with_contents(
+def call_agent_with_contents(
     contents: Any,
     model_name: str = "inherit",
     max_retries: int = 3,
     base_interval_sec: int = 1,
-    result_parsing_func: Callable = parse_gemini_json_results,
+    result_parsing_func: Callable = parse_agent_json_response,
     generation_configs: Optional[dict] = None,
     check_parsed_response_not_none: bool = True,
 ):
@@ -565,7 +564,7 @@ def call_gemini_with_contents(
 
     if _antigravity_agent_runner is None:
         raise RuntimeError(
-            "External Gemini API calls are disabled. Run BookOrchestra natively inside Antigravity "
+            "No Antigravity agent runtime is configured. Run BookOrchestra natively inside Antigravity "
             "using the `run_workflow` tool with `ScriptPath='workflows/book_orchestra_workflow.py'`, "
             "or register an Antigravity runner via `set_antigravity_agent_runner(...)`."
         )
@@ -605,17 +604,17 @@ def call_gemini_with_contents(
     }
 
 
-def call_gemini_with_text_prompt(
+def call_agent_with_text_prompt(
     prompt: str,
     model_name: str = "inherit",
-    result_parsing_func: Callable = parse_gemini_json_results,
+    result_parsing_func: Callable = parse_agent_json_response,
     generation_configs: Optional[dict] = None,
     check_parsed_response_not_none: bool = True,
     max_retries: int = 3,
     base_interval_sec: int = 1,
 ):
     contents = [types.Part(text=prompt)]
-    return call_gemini_with_contents(
+    return call_agent_with_contents(
         contents=contents,
         model_name=model_name,
         result_parsing_func=result_parsing_func,
@@ -626,11 +625,11 @@ def call_gemini_with_text_prompt(
     )
 
 
-def call_gemini_with_images(
+def call_agent_with_images(
     prompt: str,
     images: list[str],
     model_name: str = "inherit",
-    result_parsing_func: Callable = parse_gemini_json_results,
+    result_parsing_func: Callable = parse_agent_json_response,
     generation_configs: Optional[dict] = None,
     check_parsed_response_not_none: bool = True,
     max_retries: int = 3,
@@ -669,7 +668,7 @@ def call_gemini_with_images(
                 types.Part.from_bytes(data=img_bytes, mime_type="image/png")
             )
 
-    return call_gemini_with_contents(
+    return call_agent_with_contents(
         contents=llm_contents,
         model_name=model_name,
         generation_configs=generation_configs,
@@ -775,7 +774,7 @@ def _fallback_diagram_png_base64(
     return base64.b64encode(png_bytes).decode("utf-8")
 
 
-def generate_image_with_gemini(
+def generate_image_with_agent(
     model_name: str,
     prompt: str,
     aspect_ratio: str = "16:9",

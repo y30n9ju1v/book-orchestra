@@ -344,7 +344,7 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
 
         review_call_counter = {"count": 0}
 
-        def fake_gemini_with_contents(
+        def fake_agent_with_contents(
             contents,
             model_name,
             max_retries=5,
@@ -391,7 +391,7 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
                 return {"raw_response": completed_book_tex, "parsed_response": completed_book_tex}
             return {"raw_response": "{}", "parsed_response": {}}
 
-        def fake_gemini_text_prompt(prompt, model_name, **kwargs):
+        def fake_agent_text_prompt(prompt, model_name, **kwargs):
             if "Here is the technical book manuscript you are asked to review" in prompt:
                 idx = review_call_counter["count"]
                 # First 3 calls belong to v0 ensemble, next calls to v1
@@ -402,7 +402,7 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
             rev = mock_review_v0 if review_call_counter["count"] <= 3 else mock_review_v1
             return {"raw_response": json.dumps(rev), "parsed_response": dict(rev)}
 
-        def fake_gemini_with_images(prompt, images, model_name, **kwargs):
+        def fake_agent_with_images(prompt, images, model_name, **kwargs):
             if "book_continuity_ledger.json" in prompt:
                 return {"raw_response": completed_book_tex, "parsed_response": completed_book_tex}
             fmt_resp = {
@@ -426,28 +426,28 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
 
             with (
                 patch(
-                    "methods.agents.outline_agent.call_gemini_with_contents",
-                    side_effect=fake_gemini_with_contents,
+                    "methods.agents.outline_agent.call_agent_with_contents",
+                    side_effect=fake_agent_with_contents,
                 ),
                 patch(
-                    "methods.agents.literature_review_agent.call_gemini_with_contents",
-                    side_effect=fake_gemini_with_contents,
+                    "methods.agents.literature_review_agent.call_agent_with_contents",
+                    side_effect=fake_agent_with_contents,
                 ),
                 patch(
-                    "utils.llm_backend_utils.call_gemini_with_images",
-                    side_effect=fake_gemini_with_images,
+                    "utils.llm_backend_utils.call_agent_with_images",
+                    side_effect=fake_agent_with_images,
                 ),
                 patch(
-                    "methods.agents.content_refinement_agent.call_gemini_with_contents",
-                    side_effect=fake_gemini_with_contents,
+                    "methods.agents.content_refinement_agent.call_agent_with_contents",
+                    side_effect=fake_agent_with_contents,
                 ),
                 patch(
-                    "methods.agents.content_refinement_agent.call_gemini_with_images",
-                    side_effect=fake_gemini_with_images,
+                    "methods.agents.content_refinement_agent.call_agent_with_images",
+                    side_effect=fake_agent_with_images,
                 ),
                 patch(
-                    "autoraters.agent_review.call_gemini_with_text_prompt",
-                    side_effect=fake_gemini_text_prompt,
+                    "autoraters.agent_review.call_agent_with_text_prompt",
+                    side_effect=fake_agent_text_prompt,
                 ),
             ):
                 success = write_single_book(
@@ -519,7 +519,7 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
 """
         sample_b64 = _minimal_png_base64()
 
-        def fake_gemini_contents(contents, model_name, result_parsing_func=None, **kwargs):
+        def fake_agent_contents(contents, model_name, result_parsing_func=None, **kwargs):
             blob = " ".join(str(getattr(c, "text", c)) for c in contents)
             if "outline.json" in blob and "book_metadata" in blob and result_parsing_func is None:
                 return {"raw_response": json.dumps(sample_outline), "parsed_response": sample_outline}
@@ -565,19 +565,19 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
 
             with (
                 patch(
-                    "methods.agents.outline_agent.call_gemini_with_contents",
-                    side_effect=fake_gemini_contents,
+                    "methods.agents.outline_agent.call_agent_with_contents",
+                    side_effect=fake_agent_contents,
                 ),
                 patch(
-                    "methods.agents.literature_review_agent.call_gemini_with_contents",
-                    side_effect=fake_gemini_contents,
+                    "methods.agents.literature_review_agent.call_agent_with_contents",
+                    side_effect=fake_agent_contents,
                 ),
                 patch(
-                    "utils.diagram_plot_utils.call_gemini_with_contents",
-                    side_effect=fake_gemini_contents,
+                    "utils.diagram_plot_utils.call_agent_with_contents",
+                    side_effect=fake_agent_contents,
                 ),
                 patch(
-                    "utils.diagram_plot_utils.generate_image_with_gemini",
+                    "utils.diagram_plot_utils.generate_image_with_agent",
                     return_value=sample_b64,
                 ),
                 patch(
@@ -589,22 +589,22 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
                     return_value="Control and data plane architecture of AtlasGW.",
                 ),
                 patch(
-                    "utils.llm_backend_utils.call_gemini_with_images",
+                    "utils.llm_backend_utils.call_agent_with_images",
                     return_value={"raw_response": sample_tex, "parsed_response": sample_tex},
                 ),
                 patch(
-                    "methods.agents.content_refinement_agent.call_gemini_with_contents",
-                    side_effect=fake_gemini_contents,
+                    "methods.agents.content_refinement_agent.call_agent_with_contents",
+                    side_effect=fake_agent_contents,
                 ),
                 patch(
-                    "methods.agents.content_refinement_agent.call_gemini_with_images",
+                    "methods.agents.content_refinement_agent.call_agent_with_images",
                     return_value={
                         "raw_response": "{}",
                         "parsed_response": {"figure_and_tables": {}, "other_issues": []},
                     },
                 ),
                 patch(
-                    "autoraters.agent_review.call_gemini_with_text_prompt",
+                    "autoraters.agent_review.call_agent_with_text_prompt",
                     return_value={"raw_response": json.dumps(fake_review), "parsed_response": dict(fake_review)},
                 ),
             ):
@@ -634,9 +634,9 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
         import ast
         import asyncio
         from methods.agy_workflow_runner import run_book_orchestra_workflow
-        from utils.gemini_utils import (
+        from utils.agent_runtime_utils import (
             set_antigravity_agent_runner,
-            call_gemini_with_text_prompt,
+            call_agent_with_text_prompt,
         )
 
         # 1. Verify workflow entrypoint compiles with top-level await & skill/schema exist
@@ -665,7 +665,7 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
             lambda prompt, **kw: '```json\n{"bridged": true}\n```'
         )
         try:
-            bridged_res = call_gemini_with_text_prompt("ping")
+            bridged_res = call_agent_with_text_prompt("ping")
             self.assertEqual(bridged_res["parsed_response"], {"bridged": True})
         finally:
             set_antigravity_agent_runner(None)
@@ -891,8 +891,8 @@ class TestReviewFixesAndSecurityHardening(unittest.TestCase):
             # 2. When no runner is available and --emit_workflow_only is NOT set, CLI exits 1
             out_fail = os.path.join(tmpdir, "out_fail")
             with (
-                patch("utils.gemini_utils.get_antigravity_agent_runner", return_value=None),
-                patch("utils.gemini_utils.enable_agy_cli_runner", return_value=False),
+                patch("utils.agent_runtime_utils.get_antigravity_agent_runner", return_value=None),
+                patch("utils.agent_runtime_utils.enable_agy_cli_runner", return_value=False),
             ):
                 with self.assertRaises(SystemExit) as cm:
                     book_writing_cli.main(
@@ -908,7 +908,7 @@ class TestReviewFixesAndSecurityHardening(unittest.TestCase):
             # 3. When write_single_book fails (returns False), CLI exits 1
             out_fail2 = os.path.join(tmpdir, "out_fail2")
             with (
-                patch("utils.gemini_utils.get_antigravity_agent_runner", return_value=lambda *a, **k: "{}"),
+                patch("utils.agent_runtime_utils.get_antigravity_agent_runner", return_value=lambda *a, **k: "{}"),
                 patch("methods.book_writer.write_single_book", return_value=False),
             ):
                 with self.assertRaises(SystemExit) as cm2:
@@ -1191,7 +1191,7 @@ A & B & C & D & E & F \\
                 )
 
     def test_re_review_agy_model_alias_and_multimodal_bridge_and_bibtex_check(self):
-        from utils.gemini_utils import (
+        from utils.agent_runtime_utils import (
             resolve_agy_cli_model_name,
             enable_agy_cli_runner,
             get_antigravity_agent_runner,
@@ -1204,7 +1204,7 @@ A & B & C & D & E & F \\
 
         # 1. Model alias resolution ('flash', 'pro', 'inherit')
         with patch(
-            "utils.gemini_utils.list_agy_cli_models",
+            "utils.agent_runtime_utils.list_agy_cli_models",
             return_value=["gemini-3.8-flash-high", "gemini-3.8-pro-high"],
         ):
             self.assertIsNone(resolve_agy_cli_model_name("inherit"))
@@ -1217,7 +1217,7 @@ A & B & C & D & E & F \\
 
         # When model discovery returns empty (e.g. offline sandbox), short aliases return None
         # instead of passing invalid '--model flash' to agy CLI
-        with patch("utils.gemini_utils.list_agy_cli_models", return_value=[]):
+        with patch("utils.agent_runtime_utils.list_agy_cli_models", return_value=[]):
             self.assertIsNone(resolve_agy_cli_model_name("flash"))
             self.assertIsNone(resolve_agy_cli_model_name("pro"))
 
@@ -1225,7 +1225,7 @@ A & B & C & D & E & F \\
         set_antigravity_agent_runner(None)
         try:
             with patch(
-                "utils.gemini_utils.find_agy_cli_binary",
+                "utils.agent_runtime_utils.find_agy_cli_binary",
                 return_value="/usr/bin/true",
             ):
                 ok = enable_agy_cli_runner()

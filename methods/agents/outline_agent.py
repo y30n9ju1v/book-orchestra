@@ -14,7 +14,7 @@
 
 import json
 from utils.common_utils import load_md_file
-from utils.gemini_utils import call_gemini_with_contents, types
+from utils.agent_runtime_utils import call_agent_with_contents, types
 
 from methods.prompts.outline_agent import outline_agent_system_prompt
 
@@ -22,7 +22,7 @@ from methods.prompts.outline_agent import outline_agent_system_prompt
 class OutlineAgent:
     def __init__(
         self,
-        model_name: str = "gemini-3.1-pro-preview",
+        model_name: str = "inherit",
         cutoff_date: str = "2024-10",
         target_audience: str = "Senior Software & Systems Engineers",
         book_style: str = "Practical Architecture & Production Engineering",
@@ -98,7 +98,7 @@ class OutlineAgent:
             types.Part.from_text(text="'template.tex':\n" + template_text),
             types.Part.from_text(text="'guidelines.md':\n" + guidelines_text),
         ]
-        response_dict = call_gemini_with_contents(
+        response_dict = call_agent_with_contents(
             contents=contents,
             model_name=self.model_name,
         )

@@ -20,7 +20,7 @@ try:
 except ImportError:
     np = None  # type: ignore
 
-from utils.gemini_utils import call_gemini_with_text_prompt
+from utils.agent_runtime_utils import call_agent_with_text_prompt
 
 # --- TECHNICAL BOOK EDITORIAL & ENGINEERING REVIEW BOARD RUBRICS ---
 
@@ -218,7 +218,7 @@ Here is the technical book manuscript you are asked to review:
             print(
                 f"Generating Editorial Review Board assessment {i + 1}/{num_review_ensemble} ({persona_id})..."
             )
-            response = call_gemini_with_text_prompt(
+            response = call_agent_with_text_prompt(
                 prompt=base_prompt,
                 model_name=model_name,
                 generation_configs={
@@ -271,7 +271,7 @@ Here is the technical book manuscript you are asked to review:
             is_benign=True,
             persona="principal_engineer",
         )
-        response = call_gemini_with_text_prompt(
+        response = call_agent_with_text_prompt(
             prompt=base_prompt,
             model_name=model_name,
             generation_configs={
@@ -302,7 +302,7 @@ Review {i + 1}/{len(reviews)} ({persona_name}):
 ```
 """
     base_prompt = AGENTREVIEW_INSTRUCTIONS + review_text
-    response = call_gemini_with_text_prompt(
+    response = call_agent_with_text_prompt(
         prompt=base_prompt,
         model_name=model,
         generation_configs={

@@ -17,7 +17,7 @@ Antigravity Native `run_workflow` Script for BookOrchestra.
 
 Orchestrates the entire multi-agent IT & Engineering Book publishing pipeline
 using Antigravity's built-in `phase`, `agent`, `parallel`, and `pipeline` primitives
-with ZERO external Gemini/OpenAI API keys required.
+with zero external model-provider API keys required.
 
 Usage inside Antigravity:
   run_workflow(
@@ -66,9 +66,9 @@ from autoraters.agent_review import (
     meta_reviewer_system_prompt,
     _populate_score_aliases,
 )
-from utils.gemini_utils import (
-    parse_gemini_json_results,
-    parse_gemini_latex_results,
+from utils.agent_runtime_utils import (
+    parse_agent_json_response,
+    parse_agent_latex_response,
     _fallback_diagram_png_base64,
 )
 from utils.diagram_plot_utils import (
@@ -423,7 +423,7 @@ async def run_book_orchestra_workflow(
         model=model_tier,
     )
     if isinstance(raw_outline, str):
-        raw_outline = parse_gemini_json_results(raw_outline) or json.loads(raw_outline)
+        raw_outline = parse_agent_json_response(raw_outline) or json.loads(raw_outline)
     outline = OutlineAgent._normalize_book_blueprint(dict(raw_outline))
 
     outline_path = os.path.join(base_dir, "outline.json")
@@ -472,7 +472,7 @@ async def run_book_orchestra_workflow(
     grounding_notes_blob = f"{proposal_text}\n{notes_text}"
     for task, res in zip(search_tasks, discovery_results):
         if isinstance(res, str):
-            res = parse_gemini_json_results(res) or {}
+            res = parse_agent_json_response(res) or {}
         task_grounding = f"{grounding_notes_blob}\n{task.get('focus', '')}\n{task.get('context', '')}"
         for cand in (res or {}).get("candidates", []):
             title = cand.get("title", "").strip()
@@ -604,7 +604,7 @@ async def run_book_orchestra_workflow(
         role="Preface & Foundations Author",
         model=model_tier,
     )
-    updated_template_tex = parse_gemini_latex_results(str(lit_latex_raw))
+    updated_template_tex = parse_agent_latex_response(str(lit_latex_raw))
     updated_template_tex, _ = audit_and_clean_citations(
         updated_template_tex, set(citation_map.keys())
     )
@@ -789,7 +789,7 @@ async def run_book_orchestra_workflow(
         role="Principal Technical Book Author",
         model=model_tier,
     )
-    current_tex = parse_gemini_latex_results(str(draft_latex_raw))
+    current_tex = parse_agent_latex_response(str(draft_latex_raw))
     current_tex, _ = audit_and_clean_citations(
         current_tex, set(citation_map.keys())
     )
@@ -856,7 +856,7 @@ async def run_book_orchestra_workflow(
         parsed_reviews = []
         for r in raw_reviews:
             if isinstance(r, str):
-                r = parse_gemini_json_results(r) or {}
+                r = parse_agent_json_response(r) or {}
             parsed_reviews.append(_populate_score_aliases(dict(r)))
 
         meta_prompt = (
@@ -876,7 +876,7 @@ async def run_book_orchestra_workflow(
             model=reflection_model_tier,
         )
         if isinstance(meta_raw, str):
-            meta_raw = parse_gemini_json_results(meta_raw) or parsed_reviews[0]
+            meta_raw = parse_agent_json_response(meta_raw) or parsed_reviews[0]
         meta_review = _populate_score_aliases(dict(meta_raw))
         score = float(meta_review.get("Overall", 0))
         review_out = os.path.join(
@@ -930,8 +930,8 @@ async def run_book_orchestra_workflow(
             model=reflection_model_tier,
         )
         if isinstance(rev_res, str):
-            rev_res = parse_gemini_json_results(rev_res) or {}
-        new_tex = parse_gemini_latex_results(str(rev_res.get("latex", "")))
+            rev_res = parse_agent_json_response(rev_res) or {}
+        new_tex = parse_agent_latex_response(str(rev_res.get("latex", "")))
         if not new_tex:
             break
         new_tex, _ = audit_and_clean_citations(new_tex, set(citation_map.keys()))
@@ -1055,7 +1055,7 @@ async def run_book_orchestra_workflow(
         role="Production Typesetting QA Editor",
         model=reflection_model_tier,
     )
-    polished_tex = parse_gemini_latex_results(str(fmt_raw)) or current_tex
+    polished_tex = parse_agent_latex_response(str(fmt_raw)) or current_tex
     polished_tex, _ = audit_and_clean_citations(
         polished_tex, set(citation_map.keys())
     )

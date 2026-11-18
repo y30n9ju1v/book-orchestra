@@ -1,6 +1,6 @@
 ---
 name: book-orchestra
-description: Orchestrate multi-agent IT and engineering book authoring, diagram generation, and 3-persona editorial review natively inside Antigravity using run_workflow without external Gemini API keys.
+description: Orchestrate multi-agent IT and engineering book authoring, diagram generation, and 3-persona editorial review natively inside Antigravity using run_workflow without external model-provider API keys.
 ---
 
 # BookOrchestra — Antigravity Native Technical Book Publishing Skill

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import os
 import re
 import json
@@ -110,6 +111,12 @@ def _extract_pdf_text_raw_bytes(pdf_path: str) -> str:
     try:
         with open(pdf_path, "rb") as f:
             raw = f.read().decode("latin-1", errors="ignore")
+        b64_match = re.search(r"%UTF8_TEXT_B64:([A-Za-z0-9+/=]+)", raw)
+        if b64_match:
+            try:
+                return base64.b64decode(b64_match.group(1)).decode("utf-8", errors="replace")
+            except Exception:
+                pass
         matches = re.findall(r"\((.*?)\)\s*Tj", raw, re.DOTALL)
         cleaned = []
         for m in matches:
@@ -345,10 +352,11 @@ def render_minimal_pdf(text: str, pdf_path: str, title: str = "BookOrchestra Man
         for i in range(0, len(wrapped_lines), lines_per_page)
     ]
 
-    # Object 1: Catalog, Object 2: Pages, Object 3: Font
-    # For each page p (0..N-1): Page obj = 4 + 2*p, Content obj = 5 + 2*p
+    # Object 1: Catalog, Object 2: Pages, Object 3: ASCII Helvetica (/F1),
+    # Object 4-5: Korean Type0 CIDFont (/F2)
+    # For each page p (0..N-1): Page obj = 6 + 2*p, Content obj = 7 + 2*p
     num_pages = len(pages_lines)
-    page_obj_ids = [4 + 2 * i for i in range(num_pages)]
+    page_obj_ids = [6 + 2 * i for i in range(num_pages)]
     kids_str = " ".join(f"{pid} 0 R" for pid in page_obj_ids)
 
     objects = [
@@ -357,25 +365,29 @@ def render_minimal_pdf(text: str, pdf_path: str, title: str = "BookOrchestra Man
             "latin-1"
         ),
         b"3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+        b"4 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /HYGoThic-Medium /Encoding /UniKS-UCS2-H /DescendantFonts [5 0 R] >>\nendobj\n",
+        b"5 0 obj\n<< /Type /Font /Subtype /CIDFontType2 /BaseFont /HYGoThic-Medium /CIDSystemInfo << /Registry (Adobe) /Ordering (Korea1) /Supplement 2 >> >>\nendobj\n",
     ]
 
     for idx, page_lines in enumerate(pages_lines):
-        page_id = 4 + 2 * idx
-        content_id = 5 + 2 * idx
+        page_id = 6 + 2 * idx
+        content_id = 7 + 2 * idx
         stream_cmds = ["BT", "/F1 10 Tf", "50 750 Td", "14 TL"]
         for l_idx, line in enumerate(page_lines):
-            escaped = _escape_pdf_text(line)
-            if l_idx == 0:
-                stream_cmds.append(f"({escaped}) Tj")
+            prefix = "" if l_idx == 0 else "T* "
+            if line.isascii():
+                escaped = _escape_pdf_text(line)
+                stream_cmds.append(f"{prefix}({escaped}) Tj")
             else:
-                stream_cmds.append(f"T* ({escaped}) Tj")
+                utf16be_hex = line.encode("utf-16-be", errors="replace").hex().upper()
+                stream_cmds.append(f"{prefix}/F2 10 Tf <{utf16be_hex}> Tj /F1 10 Tf")
         stream_cmds.append("ET")
         stream_bytes = "\n".join(stream_cmds).encode("latin-1")
 
         page_obj = (
             f"{page_id} 0 obj\n"
             f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_id} 0 R >>\n"
+            f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {content_id} 0 R >>\n"
             f"endobj\n"
         ).encode("latin-1")
         content_obj = (
@@ -401,9 +413,12 @@ def render_minimal_pdf(text: str, pdf_path: str, title: str = "BookOrchestra Man
     xref_lines = [f"xref\n0 {total_objs}\n0000000000 65535 f \n"]
     for off in offsets[1:]:
         xref_lines.append(f"{off:010d} 00000 n \n")
+    utf8_b64 = base64.b64encode((text or title).encode("utf-8")).decode("ascii")
     trailer = (
         f"trailer\n<< /Size {total_objs} /Root 1 0 R >>\n"
-        f"startxref\n{xref_offset}\n%%EOF\n"
+        f"startxref\n{xref_offset}\n"
+        f"%UTF8_TEXT_B64:{utf8_b64}\n"
+        f"%%EOF\n"
     )
     pdf_chunks.append("".join(xref_lines).encode("latin-1"))
     pdf_chunks.append(trailer.encode("latin-1"))

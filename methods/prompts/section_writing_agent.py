@@ -55,7 +55,9 @@ CRITICAL AUTHORING & PUBLISHING STANDARDS:
    - Assign unique labels (`\label{ch:...}`, `\label{sec:...}`, `\label{tab:...}`, `\label{fig:...}`, `\label{lst:...}`) and reference them with `\cref{...}` / `\Cref{...}`.
 
 5. **Figures and Visual Fidelity**
-   - Incorporate ALL figures from `figures_list` near their first discussion using `figures/<filename>` (exact filename + extension).
+   - Incorporate every ready figure from `figures_list` in its designated `chapter_title` and close to its `placement_hint`, using `figures/<filename>` (exact filename + extension). For user-supplied figures without a designated chapter, choose the best editorial fit.
+   - Introduce each figure by explaining the question it answers, then walk the reader through the important path, relationship, or comparison. A figure is a teaching device, not decoration.
+   - Do not place the same visual repeatedly, and do not claim a visual exists if it is absent from `figures_list`.
    - Ground your explanations strictly in the visual content of each provided figure.
    - Never include `"Figure X:"` inside `\caption{...}`.
 

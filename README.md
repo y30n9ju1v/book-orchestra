@@ -48,9 +48,12 @@ Or invoke `run_workflow` with:
     "book_style": "Practical Architecture & Production Engineering",
     "author_voice": "Warm, exploratory, reader-facing, and rich in concrete examples",
     "use_plotting": true,
+    "visual_density": "high",
     "max_reflections": 2
   }
   ```
+
+  `visual_density`는 `minimal`, `balanced`, `high` 중 하나입니다. 기본값 `high`는 서문·부록을 제외한 각 장에 최소 2개의 학습용 개념도/흐름도를 계획합니다. 정량 그래프는 `technical_notes.md`에 실제 수치가 있을 때만 만들며, 생성에 실패한 자리표시자 이미지는 원고에 포함하지 않습니다. `raw_materials/figures/`에 넣은 PNG/JPEG/PDF는 자동으로 등록되어 집필 에이전트가 활용합니다.
 
 ### 2. Generate a `run_workflow` Payload from CLI
 ```bash

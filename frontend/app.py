@@ -209,6 +209,18 @@ def render_sidebar():
         index=0,
         disabled=st.session_state.locked,
     )
+    visual_density_labels = {
+        "High — 2+ teaching visuals per chapter": "high",
+        "Balanced — 1+ teaching visual per chapter": "balanced",
+        "Minimal — essentials only": "minimal",
+    }
+    selected_visual_density_label = st.sidebar.selectbox(
+        "Visual Density",
+        list(visual_density_labels),
+        index=0,
+        disabled=st.session_state.locked or enable_plotting == "No",
+    )
+    selected_visual_density = visual_density_labels[selected_visual_density_label]
 
     strict_latex_mode = st.sidebar.checkbox(
         "Strict LaTeX Publish Mode (require a TeX engine)",
@@ -242,6 +254,7 @@ def render_sidebar():
         selected_style,
         selected_author_voice,
         enable_plotting,
+        selected_visual_density,
         email_input,
     )
 
@@ -253,6 +266,7 @@ def render_sidebar():
     selected_style,
     selected_author_voice,
     enable_plotting,
+    selected_visual_density,
     email_input,
 ) = render_sidebar()
 
@@ -379,6 +393,7 @@ def handle_live_execution(
     selected_style,
     selected_author_voice,
     enable_plotting,
+    selected_visual_density,
 ):
     if st.session_state.running:
         if not st.session_state.get("thread_started"):
@@ -430,6 +445,8 @@ def handle_live_execution(
                 selected_style,
                 "--author_voice",
                 selected_author_voice,
+                "--visual_density",
+                selected_visual_density,
             ]
             if enable_plotting == "Yes":
                 command.extend(
@@ -1149,4 +1166,5 @@ else:
         selected_style,
         selected_author_voice,
         enable_plotting,
+        selected_visual_density,
     )

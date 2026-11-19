@@ -74,11 +74,14 @@ class SectionWritingAgent:
 
         context = "### AVAILABLE ARCHITECTURE DIAGRAMS & BENCHMARK FIGURES\n"
         for idx, fig in enumerate(figures_info, 1):
+            if fig.get("status", "ready") != "ready" or not fig.get("name"):
+                continue
             name = fig.get("name", f"figure_{idx}.jpg")
             if (
                 name
                 and not name.endswith(".png")
                 and not name.endswith(".jpg")
+                and not name.endswith(".jpeg")
                 and not name.endswith(".pdf")
             ):
                 name += ".png"
@@ -87,6 +90,9 @@ class SectionWritingAgent:
             context += f"Item {idx}:\n"
             context += f"  - Filename: {name}\n"
             context += f"  - Caption: {caption}\n"
+            context += f"  - Chapter: {fig.get('chapter_title') or 'best editorial fit'}\n"
+            context += f"  - Placement: {fig.get('placement_hint') or 'near first relevant explanation'}\n"
+            context += f"  - Teaching purpose: {fig.get('pedagogical_purpose') or 'clarify the surrounding concept'}\n"
             context += "--------------------------------------------------\n"
         return context
 
@@ -212,11 +218,14 @@ class SectionWritingAgent:
             image_paths = []
             if figures_info:
                 for fig in figures_info:
+                    if fig.get("status", "ready") != "ready":
+                        continue
                     name = fig.get("name", "")
                     if name:
                         if (
                             not name.endswith(".png")
                             and not name.endswith(".jpg")
+                            and not name.endswith(".jpeg")
                             and not name.endswith(".pdf")
                         ):
                             name += ".png"

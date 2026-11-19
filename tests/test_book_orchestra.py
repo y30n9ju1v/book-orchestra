@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -881,6 +882,18 @@ async def acquire(tokens: int) -> bool:
             self.assertTrue(os.path.exists(os.path.join(out_dir, "references.bib")))
             self.assertTrue(os.path.isdir(os.path.join(out_dir, "figures")))
             self.assertGreaterEqual(len(res["chapters"]), 2)
+            with open(
+                os.path.join(out_dir, "plotting_results.json"),
+                "r",
+                encoding="utf-8",
+            ) as results_file:
+                visual_results = json.load(results_file)
+            self.assertGreaterEqual(len(visual_results), 1)
+            for visual_result in visual_results:
+                self.assertIn(visual_result["status"], ("ready", "failed"))
+                if visual_result["status"] == "failed":
+                    self.assertIsNone(visual_result["name"])
+                    self.assertEqual(visual_result["size_bytes"], 0)
 
 
 class TestReviewFixesAndSecurityHardening(unittest.TestCase):
@@ -924,6 +937,7 @@ class TestReviewFixesAndSecurityHardening(unittest.TestCase):
             self.assertEqual(wf_args["image_model_name"], "image-generator")
             self.assertEqual(wf_args["plotting_max_critic_rounds"], 4)
             self.assertEqual(wf_args["max_reflections"], 5)
+            self.assertEqual(wf_args["visual_density"], "high")
             self.assertEqual(payload["ScriptPath"], "workflows/book_orchestra_workflow.py")
 
             # 2. When no runner is available and --emit_workflow_only is NOT set, CLI exits 1
@@ -1206,27 +1220,27 @@ A & B & C & D & E & F \\
             self.assertEqual(len(files), 1)
             self.assertTrue(files[0].startswith("ch01_fresh_chapter"))
 
-        # Check no hardcoded /Users/yeongjun paths across ALL repository files
-        for root, dirs, files in os.walk(REPO_ROOT):
-            dirs[:] = [
-                d
-                for d in dirs
-                if d not in {".git", "__pycache__", ".pytest_cache", "node_modules"}
-            ]
-            for fname in files:
-                if not fname.endswith((".py", ".md", ".json", ".tex")):
-                    continue
-                if fname == "test_book_orchestra.py":
-                    continue
-                full_p = os.path.join(root, fname)
-                rel_p = os.path.relpath(full_p, REPO_ROOT)
-                with open(full_p, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                self.assertNotIn(
-                    "/Users/yeongjun",
-                    content,
-                    f"Hardcoded user path found in {rel_p}",
-                )
+        # Check committed repository sources, not ignored build outputs or local input drafts.
+        tracked = subprocess.run(
+            ["git", "ls-files"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        for rel_p in tracked:
+            if not rel_p.endswith((".py", ".md", ".json", ".tex")):
+                continue
+            if rel_p == "tests/test_book_orchestra.py":
+                continue
+            full_p = os.path.join(REPO_ROOT, rel_p)
+            with open(full_p, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            self.assertNotIn(
+                "/Users/yeongjun",
+                content,
+                f"Hardcoded user path found in {rel_p}",
+            )
 
     def test_re_review_agy_model_alias_and_multimodal_bridge_and_bibtex_check(self):
         from utils.agent_runtime_utils import (
@@ -1508,6 +1522,65 @@ class TestProductionHardeningReview(unittest.TestCase):
                     with open(tpl_path, "r", encoding="utf-8") as tf:
                         self.assertNotIn("Noto Sans Gothic", tf.read())
 
+    def test_visual_density_coverage_and_user_figure_catalog(self):
+        import base64
+        from methods.agy_workflow_runner import (
+            _catalog_user_figures,
+            _ensure_visual_coverage,
+        )
+        from utils.diagram_plot_utils import _minimal_png_base64
+
+        outline = {
+            "plotting_plan": [],
+            "section_plan": [
+                {
+                    "section_title": "Concurrency Mental Models",
+                    "learning_objectives": ["Distinguish task and stream lifecycles"],
+                    "subsections": [
+                        {"subsection_title": "Task creation"},
+                        {"subsection_title": "Cancellation and cleanup"},
+                    ],
+                },
+                {"section_title": "Appendix: Commands"},
+            ],
+        }
+        enriched = _ensure_visual_coverage(outline, "high")
+        self.assertEqual(len(enriched["plotting_plan"]), 2)
+        self.assertTrue(
+            all(
+                item["chapter_title"] == "Concurrency Mental Models"
+                and item["plot_type"] == "diagram"
+                and item["pedagogical_purpose"]
+                for item in enriched["plotting_plan"]
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as figures_dir:
+            figure_name = "task-lifecycle.png"
+            with open(os.path.join(figures_dir, figure_name), "wb") as image_file:
+                image_file.write(base64.b64decode(_minimal_png_base64()))
+            with open(
+                os.path.join(figures_dir, "info.json"), "w", encoding="utf-8"
+            ) as metadata_file:
+                json.dump(
+                    [
+                        {
+                            "name": figure_name,
+                            "caption": "Task lifecycle and cancellation boundaries",
+                            "chapter_title": "Concurrency Mental Models",
+                        }
+                    ],
+                    metadata_file,
+                )
+
+            catalog = _catalog_user_figures(figures_dir)
+            self.assertEqual(len(catalog), 1)
+            self.assertEqual(catalog[0]["generated_by"], "user")
+            self.assertEqual(catalog[0]["status"], "ready")
+            self.assertEqual(
+                catalog[0]["caption"], "Task lifecycle and cancellation boundaries"
+            )
+
     def test_6_7_8_9_unified_cli_defaults_scoring_retries_and_dynamic_cutoff(self):
         from book_writing_cli import build_arg_parser
         from methods.agents.content_refinement_agent import ContentRefinementAgent
@@ -1517,12 +1590,16 @@ class TestProductionHardeningReview(unittest.TestCase):
         parser = build_arg_parser()
         default_args = parser.parse_args(["--raw_materials_dir", "examples/distributed_llm_systems_book/raw_materials"])
         self.assertTrue(default_args.use_plotting)
+        self.assertEqual(default_args.visual_density, "high")
         self.assertEqual(default_args.max_reflections, 2)
 
         with open(os.path.join(REPO_ROOT, "workflows", "workflow.json"), "r", encoding="utf-8") as wf_f:
             wf_json = json.load(wf_f)
         self.assertIsNone(wf_json["args"]["properties"]["research_cutoff"]["default"])
         self.assertIn("strict_latex", wf_json["args"]["properties"])
+        self.assertEqual(
+            wf_json["args"]["properties"]["visual_density"]["default"], "high"
+        )
 
         # Finding 7: _extract_scores must NOT double/triple-count legacy alias axes
         cra = ContentRefinementAgent.__new__(ContentRefinementAgent)

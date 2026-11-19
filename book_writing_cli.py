@@ -94,6 +94,12 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
         help="Enable Technical Illustration & Benchmark Plotting agent workflow (default: True).",
     )
     parser.add_argument(
+        "--visual_density",
+        choices=("minimal", "balanced", "high"),
+        default="high",
+        help="Teaching-visual coverage: minimal, balanced (>=1 per substantive chapter), or high (>=2; default).",
+    )
+    parser.add_argument(
         "--plotting_model_name",
         default="inherit",
         help="Antigravity model tier for the technical diagram & plotting agent.",
@@ -194,6 +200,7 @@ def main(argv=None):
             "book_style": args.book_style,
             "author_voice": args.author_voice,
             "use_plotting": args.use_plotting,
+            "visual_density": args.visual_density,
             "max_reflections": args.max_reflections,
             "research_cutoff": args.research_cutoff,
             "strict_latex": args.strict_latex,
@@ -252,7 +259,7 @@ def main(argv=None):
     from methods.agy_workflow_runner import run_book_orchestra_sync
 
     print(
-        f"🚀 Starting Unified BookOrchestra Pipeline (use_plotting={args.use_plotting}, strict_latex={args.strict_latex}) in {base_dir}"
+        f"🚀 Starting Unified BookOrchestra Pipeline (use_plotting={args.use_plotting}, visual_density={args.visual_density}, strict_latex={args.strict_latex}) in {base_dir}"
     )
     try:
         result = run_book_orchestra_sync(workflow_payload["Args"])

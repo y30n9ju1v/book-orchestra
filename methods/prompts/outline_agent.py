@@ -43,10 +43,14 @@ Define the editorial spine that keeps all chapters aligned:
 
 #### Directive 2: Architecture Diagrams & Benchmark Plots Plan (`plotting_plan`)
 Synthesize `book_proposal.md` and `technical_notes.md` to plan essential technical visuals across chapters:
+* Follow the Publishing Profile's `Visual Density`: `minimal` means only indispensable visuals, `balanced` means at least 1 teaching visual per substantive chapter, and `high` means at least 2 and usually 2–3 teaching visuals per substantive chapter. Prefaces and appendices do not require this minimum.
+* Every visual must reduce a real comprehension burden. Prefer concept maps, annotated component diagrams, numbered request/data-flow sequences, state transitions, lifecycle diagrams, comparisons, and worked-example walkthroughs. Do not create decorative hero art or several visuals that teach the same point.
 * `plot_type` MUST be exactly `"diagram"` (system topology, request/data-flow sequence, memory/storage layout, failure domain boundary) or `"plot"` (empirical latency p50/p95/p99 curves, throughput scaling, cost/memory trade-offs). If `"plot"`, specify the exact chart type inside `objective`.
+* Use `"plot"` only when `technical_notes.md` contains the exact quantitative observations required. Never invent measurements to satisfy visual-density targets; use a grounded explanatory `"diagram"` instead.
 * `data_source` MUST be exactly `"idea.md"`, `"experimental_log.md"`, `"book_proposal.md"`, `"technical_notes.md"`, or `"both"`.
 * `aspect_ratio` MUST be one of: `"1:1"`, `"1:4"`, `"2:3"`, `"3:2"`, `"3:4"`, `"4:1"`, `"4:3"`, `"4:5"`, `"5:4"`, `"9:16"`, `"16:9"`, `"21:9"`.
 * `figure_id` MUST be a semantic identifier without the word `"Figure"` (e.g., `"fig_system_topology_control_data_plane"` or `"fig_p99_latency_vs_concurrency"`).
+* Every entry MUST include `chapter_title` (exactly matching a `section_plan.section_title`), `placement_hint` (where the writer should introduce it), and `pedagogical_purpose` (the specific misconception, relationship, or process it clarifies).
 
 #### Directive 3: Technical Ecosystem & Reference Research Plan (`intro_related_work_plan`)
 Provide search instructions for the downstream Technical Research Agent to gather authoritative references (foundational systems papers from OSDI/SOSP/NSDI/SIGMOD/NeurIPS/ICML, official RFCs/specifications, classic engineering books/technical reports, and competitive ecosystem benchmarks) up to `{cutoff_date}`.
@@ -101,7 +105,10 @@ Example Output:
       "plot_type": "diagram",
       "data_source": "both",
       "objective": "Architecture diagram illustrating API gateway, semantic cache, router, continuous batching workers, and circuit-breaker fallback.",
-      "aspect_ratio": "16:9"
+      "aspect_ratio": "16:9",
+      "chapter_title": "System Architecture and Request Lifecycle",
+      "placement_hint": "After the first end-to-end request walkthrough",
+      "pedagogical_purpose": "Help readers distinguish control-plane decisions from data-plane execution"
     }},
     {{
       "figure_id": "fig_p99_latency_vs_batch_size",
@@ -109,7 +116,10 @@ Example Output:
       "plot_type": "plot",
       "data_source": "technical_notes.md",
       "objective": "Dual-axis line chart comparing static vs continuous batching throughput (tokens/sec) and p99 latency (ms) across concurrency levels.",
-      "aspect_ratio": "16:9"
+      "aspect_ratio": "16:9",
+      "chapter_title": "Performance Engineering and Capacity Planning",
+      "placement_hint": "Beside the discussion of the measured batching experiment",
+      "pedagogical_purpose": "Make the throughput and tail-latency trade-off visible without forcing readers to compare raw tables"
     }}
   ],
   "intro_related_work_plan": {{

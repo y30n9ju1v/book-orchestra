@@ -23,4 +23,5 @@ PYTHONUNBUFFERED=1 python3 book_writing_cli.py \
   --output_dir "${OUTPUT_DIR}" \
   --target_audience "Senior Backend, Platform, and ML Systems Engineers" \
   --book_style "Practical Architecture & Production Engineering" \
-  --use_plotting true
+  --use_plotting true \
+  --visual_density high

@@ -27,6 +27,7 @@ Usage inside Antigravity:
           "latex_template_dir": "templates/oreilly_style_book",
           "output_dir": "./book_output_agy",
           "use_plotting": True,
+          "visual_density": "high",
       },
       Description="Author and review an IT/Engineering book with BookOrchestra"
   )
@@ -70,7 +71,6 @@ from autoraters.agent_review import (
 from utils.agent_runtime_utils import (
     parse_agent_json_response,
     parse_agent_latex_response,
-    _fallback_diagram_png_base64,
 )
 from utils.diagram_plot_utils import (
     DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT,
@@ -79,7 +79,6 @@ from utils.diagram_plot_utils import (
     PLOT_CRITIC_AGENT_SYSTEM_PROMPT,
     execute_plot_code_worker,
     _find_matplotlib_python,
-    _minimal_png_base64,
 )
 from utils.pdf_utils import (
     compile_latex,
@@ -215,6 +214,180 @@ def _resolve_file(folder: str, primary: str, fallbacks: list[str]) -> str:
         if os.path.exists(candidate):
             return candidate
     return os.path.join(folder, primary)
+
+
+_SUPPORTED_FIGURE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
+_VISUALS_PER_CHAPTER = {"minimal": 0, "balanced": 1, "high": 2}
+
+
+def _normalize_visual_density(value: object) -> str:
+    density = str(value or "high").strip().lower()
+    return density if density in _VISUALS_PER_CHAPTER else "high"
+
+
+def _catalog_user_figures(figures_dir: str) -> list[dict]:
+    """Register user-supplied figures that were copied into the managed workspace."""
+    metadata_by_name: dict[str, dict] = {}
+    metadata_path = os.path.join(figures_dir, "info.json")
+    if os.path.isfile(metadata_path):
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+                raw_metadata = json.load(metadata_file)
+            if isinstance(raw_metadata, list):
+                metadata_by_name = {
+                    str(item.get("name", "")).replace("\\", "/"): item
+                    for item in raw_metadata
+                    if isinstance(item, dict) and item.get("name")
+                }
+        except (OSError, json.JSONDecodeError):
+            metadata_by_name = {}
+
+    figures: list[dict] = []
+    if not os.path.isdir(figures_dir):
+        return figures
+
+    for root, dirs, files in os.walk(figures_dir):
+        dirs.sort()
+        for filename in sorted(files):
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in _SUPPORTED_FIGURE_EXTENSIONS:
+                continue
+            absolute_path = os.path.join(root, filename)
+            relative_name = os.path.relpath(absolute_path, figures_dir).replace(
+                os.sep, "/"
+            )
+            supplied = metadata_by_name.get(relative_name, {})
+            stem = os.path.splitext(os.path.basename(relative_name))[0]
+            readable_stem = re.sub(r"[_-]+", " ", stem).strip()
+            title = str(supplied.get("title") or readable_stem or stem)
+            caption = str(supplied.get("caption") or title)
+            figures.append(
+                {
+                    "figure_id": sanitize_slug(
+                        supplied.get("figure_id") or stem, default="user_figure"
+                    ),
+                    "title": title,
+                    "name": relative_name,
+                    "image_path": f"figures/{relative_name}",
+                    "caption": caption,
+                    "chapter_title": supplied.get("chapter_title", ""),
+                    "placement_hint": supplied.get("placement_hint", ""),
+                    "pedagogical_purpose": supplied.get(
+                        "pedagogical_purpose", "User-supplied reference visual"
+                    ),
+                    "generated_by": "user",
+                    "status": "ready",
+                    "size_bytes": os.path.getsize(absolute_path),
+                }
+            )
+    return figures
+
+
+def _ensure_visual_coverage(outline: dict, visual_density: str) -> dict:
+    """Fill chapter-level visual gaps without inventing quantitative plots."""
+    density = _normalize_visual_density(visual_density)
+    target = _VISUALS_PER_CHAPTER[density]
+    raw_plans = outline.get("plotting_plan", [])
+    plans = [dict(plan) for plan in raw_plans if isinstance(plan, dict)]
+    if target == 0:
+        outline["plotting_plan"] = plans
+        return outline
+
+    sections = outline.get("section_plan", [])
+    if not isinstance(sections, list):
+        sections = []
+
+    def _norm(text: object) -> str:
+        return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+
+    def _is_supplemental(title: str) -> bool:
+        low = _norm(title)
+        return any(
+            marker in low
+            for marker in ("preface", "appendix", "서문", "머리말", "부록")
+        )
+
+    used_ids = {
+        sanitize_slug(plan.get("figure_id", ""), default="visual") for plan in plans
+    }
+    for chapter_index, section in enumerate(sections, 1):
+        if not isinstance(section, dict):
+            continue
+        chapter_title = str(section.get("section_title") or "").strip()
+        if not chapter_title or _is_supplemental(chapter_title):
+            continue
+
+        chapter_key = _norm(chapter_title)
+        matching = [
+            plan
+            for plan in plans
+            if _norm(plan.get("chapter_title")) == chapter_key
+        ]
+        missing = max(0, target - len(matching))
+        if not missing:
+            continue
+
+        objectives = section.get("learning_objectives", [])
+        if not isinstance(objectives, list):
+            objectives = []
+        subsections = section.get("subsections", [])
+        if not isinstance(subsections, list):
+            subsections = []
+        subsection_titles = [
+            str(item.get("subsection_title"))
+            for item in subsections
+            if isinstance(item, dict) and item.get("subsection_title")
+        ]
+        concept_seed = "; ".join(str(item) for item in objectives[:4]) or chapter_title
+        flow_seed = "; ".join(subsection_titles[:5]) or concept_seed
+        candidates = [
+            {
+                "suffix": "concept_map",
+                "title": f"{chapter_title}: 핵심 개념 지도",
+                "objective": (
+                    "Create a reader-facing concept map that explains the relationships, "
+                    f"boundaries, inputs, outputs, and key trade-offs for: {concept_seed}. "
+                    "Prefer a small number of clearly labeled elements and directional links."
+                ),
+                "placement_hint": "Place after the chapter opening mental model.",
+                "pedagogical_purpose": "Build the reader's mental model before implementation details.",
+            },
+            {
+                "suffix": "execution_flow",
+                "title": f"{chapter_title}: 실행 흐름과 판단 지점",
+                "objective": (
+                    "Create a numbered process/data-flow diagram with decision points, state "
+                    f"transitions, and failure or recovery paths grounded in: {flow_seed}."
+                ),
+                "placement_hint": "Place beside the first end-to-end walkthrough.",
+                "pedagogical_purpose": "Make control flow and cause-and-effect visible at a glance.",
+            },
+        ]
+        for candidate in candidates[:missing]:
+            base_id = f"fig_ch{chapter_index:02d}_{candidate['suffix']}"
+            figure_id = base_id
+            serial = 2
+            while figure_id in used_ids:
+                figure_id = f"{base_id}_{serial}"
+                serial += 1
+            used_ids.add(figure_id)
+            plans.append(
+                {
+                    "figure_id": figure_id,
+                    "title": candidate["title"],
+                    "plot_type": "diagram",
+                    "data_source": "both",
+                    "objective": candidate["objective"],
+                    "aspect_ratio": "16:9",
+                    "chapter_title": chapter_title,
+                    "placement_hint": candidate["placement_hint"],
+                    "pedagogical_purpose": candidate["pedagogical_purpose"],
+                    "auto_added": True,
+                }
+            )
+
+    outline["plotting_plan"] = plans
+    return outline
 
 
 def _generate_citation_key(authors_list: list[str], year: int, title: str) -> str:
@@ -398,6 +571,9 @@ async def run_book_orchestra_workflow(
         )
     ).strip()
     use_plotting = bool(workflow_args.get("use_plotting", True))
+    visual_density = _normalize_visual_density(
+        workflow_args.get("visual_density", "high")
+    )
     strict_latex = bool(workflow_args.get("strict_latex", False))
     max_reflections = int(workflow_args.get("max_reflections", 2))
     raw_cutoff = workflow_args.get("research_cutoff")
@@ -451,6 +627,7 @@ async def run_book_orchestra_workflow(
     user_figures_dir = os.path.join(target_raw_dir, "figures")
     if os.path.exists(user_figures_dir):
         shutil.copytree(user_figures_dir, figures_dir, dirs_exist_ok=True)
+    user_figures_info = _catalog_user_figures(figures_dir)
 
     proposal_path = _resolve_file(
         target_raw_dir,
@@ -478,7 +655,7 @@ async def run_book_orchestra_workflow(
 
     blueprint_prompt = (
         outline_agent_system_prompt.format(cutoff_date=research_cutoff)
-        + f"\n\nPublishing Profile:\n- Target Audience: {target_audience}\n- Book Style: {book_style}\n- Author Voice Contract: {author_voice}\n\n"
+        + f"\n\nPublishing Profile:\n- Target Audience: {target_audience}\n- Book Style: {book_style}\n- Author Voice Contract: {author_voice}\n- Visual Density: {visual_density}\n\n"
         + f"--- 'book_proposal.md' ---\n{proposal_text}\n\n"
         + f"--- 'technical_notes.md' ---\n{notes_text}\n\n"
         + f"--- 'template.tex' ---\n{template_text}\n\n"
@@ -494,6 +671,15 @@ async def run_book_orchestra_workflow(
     if isinstance(raw_outline, str):
         raw_outline = parse_agent_json_response(raw_outline) or json.loads(raw_outline)
     outline = OutlineAgent._normalize_book_blueprint(dict(raw_outline))
+    if use_plotting:
+        before_visual_count = len(outline.get("plotting_plan", []))
+        outline = _ensure_visual_coverage(outline, visual_density)
+        after_visual_count = len(outline.get("plotting_plan", []))
+        if after_visual_count > before_visual_count:
+            log_fn(
+                f"Visual coverage policy ({visual_density}) added "
+                f"{after_visual_count - before_visual_count} chapter-learning diagrams."
+            )
 
     outline_path = os.path.join(base_dir, "outline.json")
     with open(outline_path, "w", encoding="utf-8") as f:
@@ -707,7 +893,9 @@ async def run_book_orchestra_workflow(
         f.write(updated_template_tex)
 
     # Generate Architecture Diagrams & Benchmark Plots in Parallel if enabled
-    figures_info = []
+    figures_info = list(user_figures_info)
+    if figures_info:
+        log_fn(f"Registered {len(figures_info)} user-supplied figure(s).")
     raw_plotting = outline.get("plotting_plan", []) if use_plotting else []
     plotting_plan = [fp for fp in raw_plotting if isinstance(fp, dict)] if isinstance(raw_plotting, list) else []
     if plotting_plan:
@@ -786,13 +974,24 @@ async def run_book_orchestra_workflow(
                 default="fig_architecture",
             )
             title = fig_plan.get("title", fig_id)
-            plot_type = fig_plan.get("plot_type", "diagram").lower()
+            plot_type = str(fig_plan.get("plot_type") or "diagram").lower()
             objective = fig_plan.get("objective", "")
             aspect_ratio = fig_plan.get("aspect_ratio", "16:9")
+            pedagogical_purpose = fig_plan.get("pedagogical_purpose", "")
+            chapter_title = str(fig_plan.get("chapter_title", "")).strip()
+            chapter_blueprint = next(
+                (
+                    section
+                    for section in outline.get("section_plan", [])
+                    if isinstance(section, dict)
+                    and str(section.get("section_title", "")).strip() == chapter_title
+                ),
+                {},
+            )
 
             raw_bytes: bytes | None = None
             ext: str | None = None
-            generated_by = "fallback"
+            generated_by = "failed"
 
             if "plot" in plot_type or "chart" in plot_type:
                 if _find_matplotlib_python() is not None:
@@ -869,6 +1068,7 @@ async def run_book_orchestra_workflow(
                         f"(aspect ratio {aspect_ratio}) for:\n"
                         f"Title: {title}\n"
                         f"Objective: {objective}\n\n"
+                        f"Teaching purpose: {pedagogical_purpose}\n"
                         f"Use ONLY the exact quantitative figures from the technical notes below (never fabricate numbers). "
                         f"Keep labels sharp, legible, and clean with high contrast on a pure white background.\n\n"
                         f"Technical Notes:\n{notes_text[:8000]}\n\n"
@@ -886,7 +1086,9 @@ async def run_book_orchestra_workflow(
                 diag_spec = (
                     f"Title: {title}\n"
                     f"Objective: {objective}\n"
+                    f"Teaching purpose: {pedagogical_purpose}\n"
                     f"Aspect Ratio: {aspect_ratio}\n"
+                    f"Chapter Blueprint:\n{json.dumps(chapter_blueprint, ensure_ascii=False)[:6000]}\n"
                     f"Architecture Context:\n{proposal_text[:6000]}"
                 )
                 diag_prompt = (
@@ -894,6 +1096,9 @@ async def run_book_orchestra_workflow(
                     f"Generate a crisp, pure white-background technical architecture diagram "
                     f"(O'Reilly / DDIA editorial style, legible text, no baked-in figure number caption) for:\n"
                     f"{diag_spec}\n\n"
+                    f"Use the manuscript's language for labels. Keep the visual focused: prefer 5–12 labeled "
+                    f"elements, explicit arrow direction, a clear reading order, and generous whitespace. "
+                    f"Do not add components or claims absent from the supplied blueprint/context.\n\n"
                     f"Save the generated image file and return its exact absolute path in `image_path`."
                 )
                 raw_bytes, ext = await _generate_with_image_agent(
@@ -905,14 +1110,33 @@ async def run_book_orchestra_workflow(
                 if raw_bytes and ext:
                     generated_by = "image-generator"
 
+            caption = f"{title}: {objective}".strip(": ")
             if not raw_bytes or ext not in (".png", ".jpg"):
-                raw_bytes = base64.b64decode(
-                    _fallback_diagram_png_base64(prompt=f"{title}\n{objective}")
-                )
-                ext = ".png"
-                generated_by = "fallback"
+                return {
+                    "figure_id": fig_id,
+                    "title": title,
+                    "name": None,
+                    "image_path": None,
+                    "caption": caption,
+                    "chapter_title": fig_plan.get("chapter_title", ""),
+                    "placement_hint": fig_plan.get("placement_hint", ""),
+                    "pedagogical_purpose": fig_plan.get(
+                        "pedagogical_purpose", ""
+                    ),
+                    "generated_by": "failed",
+                    "status": "failed",
+                    "error": "No valid PNG or JPEG was produced after generation attempts.",
+                    "size_bytes": 0,
+                }
 
             filename = f"{fig_id}{ext}"
+            if os.path.exists(os.path.join(figures_dir, filename)):
+                stem = f"{fig_id}_generated"
+                filename = f"{stem}{ext}"
+                serial = 2
+                while os.path.exists(os.path.join(figures_dir, filename)):
+                    filename = f"{stem}_{serial}{ext}"
+                    serial += 1
             img_rel = f"figures/{filename}"
             img_abs_path = resolve_safe_child_path(figures_dir, filename)
             img_abs = str(img_abs_path)
@@ -920,30 +1144,38 @@ async def run_book_orchestra_workflow(
             with open(img_abs, "wb") as fh:
                 fh.write(raw_bytes)
 
-            caption = f"{title}: {objective}".strip(": ")
             return {
                 "figure_id": fig_id,
                 "title": title,
                 "name": filename,
                 "image_path": img_rel,
                 "caption": caption,
+                "chapter_title": fig_plan.get("chapter_title", ""),
+                "placement_hint": fig_plan.get("placement_hint", ""),
+                "pedagogical_purpose": fig_plan.get("pedagogical_purpose", ""),
                 "generated_by": generated_by,
+                "status": "ready",
                 "size_bytes": len(raw_bytes),
             }
 
         plot_results = await parallel_fn(plotting_plan, _generate_single_visual)
-        real_count = sum(1 for r in plot_results if r.get("generated_by") != "fallback")
+        ready_results = [
+            result
+            for result in plot_results
+            if isinstance(result, dict)
+            and result.get("status") == "ready"
+            and result.get("name")
+        ]
+        failed_count = len(plot_results) - len(ready_results)
         log_fn(
-            f"Visual generation complete: {real_count}/{len(plot_results)} real images generated "
-            f"({len(plot_results) - real_count} fallback placeholders)."
+            f"Visual generation complete: {len(ready_results)}/{len(plot_results)} real images generated; "
+            f"{failed_count} failed plan(s) were excluded from the manuscript."
         )
         with open(
             os.path.join(base_dir, "plotting_results.json"), "w", encoding="utf-8"
         ) as f:
             json.dump(plot_results, f, indent=4, ensure_ascii=False)
-        figures_info = [
-            {"name": r["name"], "caption": r["caption"]} for r in plot_results
-        ]
+        figures_info.extend(ready_results)
 
     with open(os.path.join(figures_dir, "info.json"), "w", encoding="utf-8") as f:
         json.dump(figures_info, f, indent=4, ensure_ascii=False)
@@ -970,6 +1202,9 @@ async def run_book_orchestra_workflow(
     figures_context = (
         "\n".join(
             f"- Filename: {fig['name']} | Caption: {fig['caption']}"
+            f" | Chapter: {fig.get('chapter_title') or 'best editorial fit'}"
+            f" | Placement: {fig.get('placement_hint') or 'near first relevant explanation'}"
+            f" | Teaching purpose: {fig.get('pedagogical_purpose') or 'clarify the surrounding concept'}"
             for fig in figures_info
         )
         or "No figures provided."
@@ -1414,6 +1649,9 @@ async def run_book_orchestra_workflow(
                 "research_cutoff": research_cutoff,
                 "strict_latex": strict_latex,
                 "author_voice": author_voice,
+                "visual_density": visual_density,
+                "ready_figure_count": len(figures_info),
+                "user_figure_count": len(user_figures_info),
             }
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=4, ensure_ascii=False)

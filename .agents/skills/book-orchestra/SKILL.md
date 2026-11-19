@@ -28,6 +28,7 @@ Call the `run_workflow` tool with `ScriptPath` pointing to `workflows/book_orche
     "book_style": "Practical Architecture & Production Engineering",
     "author_voice": "Warm, exploratory, reader-facing, and rich in concrete examples",
     "use_plotting": true,
+    "visual_density": "high",
     "max_reflections": 2
   }
 }

@@ -24,6 +24,7 @@ Invoke directly with Antigravity's `run_workflow` tool:
           "latex_template_dir": "templates/oreilly_style_book",
           "output_dir": "./book_output_agy",
           "use_plotting": True,
+          "visual_density": "high",
       },
       Description="Author and review an IT/Engineering book with BookOrchestra"
   )

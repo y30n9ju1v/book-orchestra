@@ -50,6 +50,12 @@
         "description": "Whether to generate technical architecture diagrams and benchmark plots in parallel.",
         "default": true
       },
+      "visual_density": {
+        "type": "string",
+        "enum": ["minimal", "balanced", "high"],
+        "description": "Minimum pedagogical visual coverage per substantive chapter; high targets at least two grounded visuals.",
+        "default": "high"
+      },
       "max_reflections": {
         "type": "integer",
         "description": "Maximum number of 3-Persona Editorial Review Board refinement rounds.",

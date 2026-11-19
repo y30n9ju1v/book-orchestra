@@ -17,6 +17,7 @@ Path Safety, Workspace Isolation, Slug/Upload Sanitization, and Image Verificati
 for BookOrchestra.
 """
 
+import base64
 import json
 import os
 import re
@@ -24,10 +25,16 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 WORKSPACE_MARKER_FILENAME = ".book_orchestra_managed.json"
 ALLOWED_FIGURE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
+ALLOWED_GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+_UUID_DIR_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_MAX_GENERATED_IMAGE_BYTES = 25 * 1024 * 1024
 
 
 def resolve_path(path_value: str | os.PathLike) -> Path:
@@ -237,3 +244,176 @@ def prepare_safe_output_workspace(
         target_raw_dir,
         latex_writeup_dir,
     )
+
+
+def get_antigravity_brain_dir() -> Path:
+    """Returns Antigravity's managed brain artifact root (`<appDataDir>/brain`)."""
+    app_data = os.environ.get("ANTIGRAVITY_APP_DATA_DIR")
+    if app_data:
+        return (Path(app_data).expanduser() / "brain").resolve()
+    return (Path.home() / ".gemini" / "antigravity" / "brain").resolve()
+
+
+def is_trusted_generated_image_path(
+    path_str: str,
+    figures_dir: str | os.PathLike,
+    brain_dir: Optional[str | os.PathLike] = None,
+) -> Optional[Path]:
+    """
+    Validates that `path_str` points to a genuine generated image inside an explicitly
+    trusted output directory:
+      1. Directly inside `figures_dir`, OR
+      2. Directly inside an Antigravity conversation artifact folder:
+         `<brain_dir>/<uuid>/<filename>.{png,jpg,jpeg}` (no nested `.system_generated`
+         or arbitrary host files, and no symlinks escaping the trusted root).
+    Returns the resolved `Path` if trusted and existing, else `None`.
+    """
+    if not path_str or not isinstance(path_str, str):
+        return None
+    cleaned = path_str.strip().strip("`'\"<>()[]")
+    if not cleaned:
+        return None
+    try:
+        raw_path = Path(cleaned)
+        if not raw_path.is_absolute():
+            return None
+        if raw_path.is_symlink():
+            return None
+        resolved = raw_path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if not resolved.is_file():
+        return None
+    if resolved.suffix.lower() not in ALLOWED_GENERATED_IMAGE_EXTENSIONS:
+        return None
+
+    try:
+        size = resolved.stat().st_size
+        if size < 8 or size > _MAX_GENERATED_IMAGE_BYTES:
+            return None
+    except OSError:
+        return None
+
+    # Trusted Root 1: inside figures_dir
+    try:
+        fig_root = resolve_path(figures_dir)
+        if resolved.is_relative_to(fig_root) and resolved != fig_root:
+            return resolved
+    except Exception:
+        pass
+
+    # Trusted Root 2: direct `<brain_dir>/<uuid>/<image>.{png,jpg,jpeg}` produced by image-generator
+    try:
+        b_root = resolve_path(brain_dir) if brain_dir is not None else get_antigravity_brain_dir()
+        if resolved.is_relative_to(b_root):
+            rel_parts = resolved.relative_to(b_root).parts
+            if len(rel_parts) == 2 and _UUID_DIR_RE.fullmatch(rel_parts[0]):
+                return resolved
+    except Exception:
+        pass
+
+    return None
+
+
+def _extract_candidate_image_paths(text: str) -> list[str]:
+    """Extracts candidate absolute image paths from plain text, Markdown, or JSON strings."""
+    if not text:
+        return []
+    candidates: list[str] = []
+    # Unix absolute paths and Windows drive paths ending in image extensions
+    for m in re.finditer(
+        r"(?:[A-Za-z]:[\\/]|/)[^\s`'\"<>|*?]+?\.(?:png|jpg|jpeg)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        cand = m.group(0).rstrip(".,;:)")
+        if cand not in candidates:
+            candidates.append(cand)
+    return candidates
+
+
+def extract_safe_generated_image_bytes(
+    response: Any,
+    figures_dir: str | os.PathLike,
+    brain_dir: Optional[str | os.PathLike] = None,
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """
+    Safely extracts validated PNG/JPEG bytes and canonical extension (`.png` or `.jpg`)
+    from an image-generation agent response.
+
+    Supports:
+    - Raw `bytes`
+    - `dict` containing `image_base64` or `image_path` / `path` / `file_path`
+    - `str` containing a JSON object, a trusted Antigravity `image-generator` artifact path
+      (possibly embedded in prose/backticks), or raw/data-URI base64 image bytes.
+
+    Rejects arbitrary host paths outside `figures_dir` and `<brain_dir>/<uuid>/<file>`.
+    """
+    raw_bytes: Optional[bytes] = None
+
+    if isinstance(response, bytes):
+        raw_bytes = response
+    elif isinstance(response, dict):
+        if response.get("image_base64"):
+            try:
+                b64_payload = str(response["image_base64"]).strip().split(",", 1)[-1]
+                raw_bytes = base64.b64decode(b64_payload, validate=True)
+            except Exception:
+                raw_bytes = None
+        if raw_bytes is None:
+            for key in ("image_path", "path", "file_path", "saved_path", "output_path"):
+                val = response.get(key)
+                if isinstance(val, str) and val.strip():
+                    trusted = is_trusted_generated_image_path(
+                        val, figures_dir=figures_dir, brain_dir=brain_dir
+                    )
+                    if trusted is not None:
+                        try:
+                            raw_bytes = trusted.read_bytes()
+                            break
+                        except OSError:
+                            raw_bytes = None
+    elif isinstance(response, str):
+        stripped = response.strip()
+        # 1. If the string is JSON (e.g., {"image_path": "..."}), unwrap it recursively
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict):
+                    return extract_safe_generated_image_bytes(
+                        parsed, figures_dir=figures_dir, brain_dir=brain_dir
+                    )
+            except Exception:
+                pass
+
+        # 2. Extract any trusted image file paths embedded in prose or backticks
+        for cand in _extract_candidate_image_paths(stripped):
+            trusted = is_trusted_generated_image_path(
+                cand, figures_dir=figures_dir, brain_dir=brain_dir
+            )
+            if trusted is not None:
+                try:
+                    raw_bytes = trusted.read_bytes()
+                    break
+                except OSError:
+                    raw_bytes = None
+
+        # 3. Fallback: direct base64 or data:image/...;base64,... string
+        if raw_bytes is None and len(stripped) > 64:
+            candidate_b64 = stripped
+            if candidate_b64.startswith("data:image/"):
+                candidate_b64 = candidate_b64.split(",", 1)[-1].strip()
+            compact_b64 = re.sub(r"\s+", "", candidate_b64)
+            if len(compact_b64) > 64 and re.fullmatch(r"[A-Za-z0-9+/=]+", compact_b64):
+                try:
+                    raw_bytes = base64.b64decode(compact_b64, validate=True)
+                except Exception:
+                    raw_bytes = None
+
+    if not raw_bytes:
+        return None, None
+    fmt = detect_media_format(raw_bytes)
+    if fmt not in (".png", ".jpg"):
+        return None, None
+    return raw_bytes, fmt

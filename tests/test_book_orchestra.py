@@ -1565,6 +1565,80 @@ class TestProductionHardeningReview(unittest.TestCase):
         self.assertNotIn("pyOpenSSL", reqs)
         self.assertIn(">=", reqs)
 
+    def test_7_image_generator_contract_security_and_plot_fallback(self):
+        import asyncio
+        import base64
+        from utils.diagram_plot_utils import (
+            UnsafePlotCodeError,
+            validate_plot_code_ast,
+        )
+        from utils.path_security import extract_safe_generated_image_bytes
+
+        # 1. `from __future__ import annotations` is allowed; other __future__ or os imports blocked
+        self.assertIsNotNone(
+            validate_plot_code_ast(
+                "from __future__ import annotations\nimport matplotlib.pyplot as plt\nplt.plot([1,2],[3,4])\n"
+            )
+        )
+        with self.assertRaises(UnsafePlotCodeError):
+            validate_plot_code_ast("from __future__ import braces\n")
+
+        # 2. extract_safe_generated_image_bytes accepts trusted <brain_dir>/<uuid>/<file>.jpg
+        #    and rejects arbitrary host paths, nested .system_generated, and escaping symlinks.
+        fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01" + (b"\x00" * 64)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            figures_dir = os.path.join(tmpdir, "figures")
+            brain_dir = os.path.join(tmpdir, "brain")
+            conv_uuid = "3203d54d-f661-488c-8a84-269c35f139f9"
+            conv_dir = os.path.join(brain_dir, conv_uuid)
+            nested_dir = os.path.join(conv_dir, ".system_generated")
+            outside_dir = os.path.join(tmpdir, "outside")
+            for d in (figures_dir, conv_dir, nested_dir, outside_dir):
+                os.makedirs(d, exist_ok=True)
+
+            valid_brain_img = os.path.join(conv_dir, "diagram_12345.jpg")
+            with open(valid_brain_img, "wb") as f:
+                f.write(fake_jpeg)
+
+            nested_img = os.path.join(nested_dir, "internal.jpg")
+            with open(nested_img, "wb") as f:
+                f.write(fake_jpeg)
+
+            outside_img = os.path.join(outside_dir, "secret.jpg")
+            with open(outside_img, "wb") as f:
+                f.write(fake_jpeg)
+
+            symlink_escape = os.path.join(conv_dir, "link.jpg")
+            os.symlink(outside_img, symlink_escape)
+
+            # Accepted: dict {"image_path": ...}
+            data, fmt = extract_safe_generated_image_bytes(
+                {"image_path": valid_brain_img, "error": ""},
+                figures_dir=figures_dir,
+                brain_dir=brain_dir,
+            )
+            self.assertEqual(data, fake_jpeg)
+            self.assertEqual(fmt, ".jpg")
+
+            # Accepted: prose + backticks (real image-generator output style)
+            data2, fmt2 = extract_safe_generated_image_bytes(
+                f"Generated diagram saved at `{valid_brain_img}` — crisp white background.",
+                figures_dir=figures_dir,
+                brain_dir=brain_dir,
+            )
+            self.assertEqual(data2, fake_jpeg)
+            self.assertEqual(fmt2, ".jpg")
+
+            # Rejected: outside host path, nested .system_generated, symlink escape, /etc/hosts
+            for untrusted in (outside_img, nested_img, symlink_escape, "/etc/hosts"):
+                bad_data, bad_fmt = extract_safe_generated_image_bytes(
+                    {"image_path": untrusted},
+                    figures_dir=figures_dir,
+                    brain_dir=brain_dir,
+                )
+                self.assertIsNone(bad_data, f"Untrusted path must be rejected: {untrusted}")
+                self.assertIsNone(bad_fmt)
+
 
 if __name__ == "__main__":
     unittest.main()

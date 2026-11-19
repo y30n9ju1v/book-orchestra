@@ -298,6 +298,13 @@ def validate_plot_code_ast(code_clean: str) -> ast.AST:
             if node.level and node.level > 0:
                 raise UnsafePlotCodeError("Relative imports are disallowed in plot code.")
             mod = (node.module or "").strip()
+            if mod == "__future__":
+                for alias in node.names:
+                    if alias.name != "annotations":
+                        raise UnsafePlotCodeError(
+                            f"Disallowed __future__ import '{alias.name}' in plot code."
+                        )
+                continue
             if mod not in ALLOWED_PLOT_MODULES:
                 raise UnsafePlotCodeError(
                     f"Disallowed import from '{mod}' in plot code."
@@ -326,15 +333,59 @@ def validate_plot_code_ast(code_clean: str) -> ast.AST:
     return tree
 
 
-def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
+_CACHED_MPL_PYTHON: dict[str, str | None] = {}
+
+
+def _find_matplotlib_python() -> str | None:
+    """Finds a Python interpreter with `matplotlib` + `numpy` available (prefers sys.executable, then local venvs)."""
+    if plt is not None:
+        return sys.executable
+    cache_key = os.getcwd()
+    if cache_key in _CACHED_MPL_PYTHON:
+        return _CACHED_MPL_PYTHON[cache_key]
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(repo_root, ".venv", "bin", "python"),
+        os.path.join(repo_root, "venv", "bin", "python"),
+        os.path.join(os.getcwd(), ".venv", "bin", "python"),
+        os.path.join(os.getcwd(), "venv", "bin", "python"),
+    ]
+    seen = set()
+    for py_bin in candidates:
+        if not py_bin or py_bin in seen or not os.path.isfile(py_bin):
+            continue
+        seen.add(py_bin)
+        try:
+            probe = subprocess.run(
+                [py_bin, "-c", "import matplotlib, numpy"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if probe.returncode == 0:
+                _CACHED_MPL_PYTHON[cache_key] = py_bin
+                return py_bin
+        except Exception:
+            continue
+
+    _CACHED_MPL_PYTHON[cache_key] = None
+    return None
+
+
+def execute_plot_code_worker(
+    code_text: str,
+    timeout_sec: int = 15,
+    allow_placeholder_fallback: bool = True,
+) -> str | None:
     """
     Sandboxed plot code execution worker:
     1. Extracts Python code and validates its AST against strict allowlists
        (blocking os/sys/open as well as NumPy/Matplotlib file I/O methods).
     2. Runs the code in an isolated child process (`python -I`) inside a temporary directory
-       with resource limits, disabled NumPy/Matplotlib file APIs, and a kernel-level
-       `sys.addaudithook` that blocks all file open/read/write, process, and network events.
-    3. Reads the rendered JPEG image and returns its Base64 string (or None on error/violation).
+       with resource limits, disabled NumPy/Matplotlib file APIs, pre-configured CJK font,
+       and a kernel-level `sys.addaudithook` + `RLIMIT_NOFILE=(0,0)` lock.
+    3. Reads the rendered PNG image and returns its Base64 string (or None on error/violation).
     """
     match = re.search(r"```python(.*?)```", code_text or "", re.DOTALL)
     code_clean = match.group(1).strip() if match else (code_text or "").strip()
@@ -345,8 +396,13 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
         print(f"Security/AST check rejected plot code: {e}")
         return None
 
-    if plt is None:
-        return _minimal_png_base64()
+    mpl_python = _find_matplotlib_python()
+    if mpl_python is None:
+        return _minimal_png_base64() if allow_placeholder_fallback else None
+
+    from utils.pdf_utils import _find_preview_font
+
+    cjk_font_path = _find_preview_font() or ""
 
     runner_source = textwrap.dedent(
         """
@@ -364,6 +420,7 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
 
         code_path = sys.argv[1]
         out_path = sys.argv[2]
+        cjk_font_path = sys.argv[3] if len(sys.argv) > 3 else ""
         with open(code_path, "r", encoding="utf-8") as f:
             user_code = f.read()
 
@@ -374,10 +431,28 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib import font_manager
         import numpy as np
 
         plt.close("all")
         plt.rcdefaults()
+
+        # Pre-register CJK/Unicode font BEFORE locking RLIMIT_NOFILE so Korean labels render cleanly
+        _configured_font_family = None
+        if cjk_font_path and os.path.isfile(cjk_font_path):
+            try:
+                font_manager.fontManager.addfont(cjk_font_path)
+                _prop = font_manager.FontProperties(fname=cjk_font_path)
+                _configured_font_family = _prop.get_name()
+            except Exception:
+                _configured_font_family = None
+
+        def _apply_cjk_rc():
+            if _configured_font_family:
+                plt.rcParams["font.family"] = [_configured_font_family, "DejaVu Sans", "sans-serif"]
+            plt.rcParams["axes.unicode_minus"] = False
+
+        _apply_cjk_rc()
 
         def _blocked_io(*a, **kw):
             raise PermissionError("File I/O is disabled inside the plot sandbox.")
@@ -403,6 +478,7 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
                     setattr(np.lib.npyio, _nio_fn, _blocked_io)
 
         ALLOWED = {
+            "__future__",
             "matplotlib",
             "matplotlib.pyplot",
             "matplotlib.patches",
@@ -435,13 +511,14 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
             safe_builtins.pop(bad, None)
         safe_builtins["__import__"] = _safe_import
 
-        # Warm up matplotlib font/renderer cache before locking OS file descriptors
+        # Warm up matplotlib font/renderer cache (both ASCII and CJK) before locking OS file descriptors
         _warm_fig, _warm_ax = plt.subplots(figsize=(1, 1))
         _warm_ax.plot([0, 1], [0, 1])
-        _warm_ax.set_title("warmup")
-        _real_savefig( io.BytesIO(), format="jpeg", dpi=72)
+        _warm_ax.set_title("warmup 한글 123")
+        _real_savefig(io.BytesIO(), format="png", dpi=72)
         plt.close("all")
         plt.rcdefaults()
+        _apply_cjk_rc()
 
         compiled_code = compile(user_code, "<plot_code>", "exec")
         exec_globals = {"__builtins__": safe_builtins, "__name__": "__main__"}
@@ -470,7 +547,7 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
             _USER_CODE_ACTIVE[0] = False
 
         if plt.get_fignums():
-            _real_savefig(img_buf, format="jpeg", bbox_inches="tight", dpi=300)
+            _real_savefig(img_buf, format="png", bbox_inches="tight", dpi=300)
             plt.close("all")
             os.write(out_fd, img_buf.getvalue())
         os.close(out_fd)
@@ -481,7 +558,7 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
         with tempfile.TemporaryDirectory(prefix="book_plot_sbx_") as tmpdir:
             code_file = os.path.join(tmpdir, "plot_script.py")
             runner_file = os.path.join(tmpdir, "_runner.py")
-            out_img = os.path.join(tmpdir, "output.jpg")
+            out_img = os.path.join(tmpdir, "output.png")
 
             with open(code_file, "w", encoding="utf-8") as f:
                 f.write(code_clean)
@@ -495,7 +572,7 @@ def execute_plot_code_worker(code_text: str, timeout_sec: int = 15) -> str:
                 "HOME": tmpdir,
             }
 
-            base_cmd = [sys.executable, "-I", runner_file, code_file, out_img]
+            base_cmd = [mpl_python, "-I", runner_file, code_file, out_img, cjk_font_path]
             proc = subprocess.run(
                 base_cmd,
                 cwd=tmpdir,

@@ -32,6 +32,7 @@ Usage inside Antigravity:
   )
 """
 
+import asyncio
 import base64
 import datetime
 import json
@@ -77,6 +78,7 @@ from utils.diagram_plot_utils import (
     PLOT_VISUALIZER_AGENT_SYSTEM_PROMPT,
     PLOT_CRITIC_AGENT_SYSTEM_PROMPT,
     execute_plot_code_worker,
+    _find_matplotlib_python,
     _minimal_png_base64,
 )
 from utils.pdf_utils import (
@@ -89,6 +91,7 @@ from utils.pdf_utils import (
 )
 from utils.path_security import (
     detect_media_format,
+    extract_safe_generated_image_bytes,
     prepare_safe_output_workspace,
     resolve_safe_child_path,
     safe_prepare_managed_subdir,
@@ -713,6 +716,70 @@ async def run_book_orchestra_workflow(
             f"(max_critic_rounds={plotting_max_critic_rounds})..."
         )
 
+        # Limit concurrent image-generator calls to avoid burst 429 RESOURCE_EXHAUSTED errors
+        image_gen_semaphore = asyncio.Semaphore(2)
+        _image_schema = {
+            "type": "object",
+            "properties": {
+                "image_path": {
+                    "type": "string",
+                    "description": "Exact absolute path where the generated PNG or JPEG image file was saved.",
+                },
+                "error": {
+                    "type": "string",
+                    "description": "Error reason if generation failed, or empty string on success.",
+                },
+            },
+            "required": ["image_path"],
+        }
+
+        def _is_quota_error_response(resp) -> bool:
+            text = json.dumps(resp, ensure_ascii=False) if isinstance(resp, dict) else str(resp or "")
+            low = text.lower()
+            return any(
+                tok in low
+                for tok in (
+                    "resource_exhausted",
+                    "429",
+                    "too many requests",
+                    "quota",
+                    "rate limit",
+                )
+            )
+
+        async def _generate_with_image_agent(
+            fig_id: str,
+            visual_prompt: str,
+            role_label: str,
+            max_attempts: int = 2,
+        ) -> tuple[bytes | None, str | None]:
+            for attempt in range(max(1, max_attempts)):
+                try:
+                    async with image_gen_semaphore:
+                        diag_resp = await agent_fn(
+                            prompt=visual_prompt,
+                            schema=_image_schema,
+                            role=role_label if attempt == 0 else f"{role_label} (retry {attempt})",
+                            type_name=image_model_name,
+                        )
+                    raw_bytes, fmt = extract_safe_generated_image_bytes(
+                        diag_resp, figures_dir=figures_dir
+                    )
+                    if raw_bytes and fmt in (".png", ".jpg"):
+                        return raw_bytes, fmt
+                    if _is_quota_error_response(diag_resp):
+                        log_fn(
+                            f"⚠️ Image generation quota/capacity limit hit for '{fig_id}'; stopping retries."
+                        )
+                        return None, None
+                except Exception as exc:
+                    if _is_quota_error_response(str(exc)):
+                        log_fn(
+                            f"⚠️ Image generation quota/capacity error for '{fig_id}'; stopping retries."
+                        )
+                        return None, None
+            return None, None
+
         async def _generate_single_visual(fig_plan: dict) -> dict:
             fig_id = sanitize_slug(
                 fig_plan.get("figure_id", "fig_architecture"),
@@ -721,135 +788,155 @@ async def run_book_orchestra_workflow(
             title = fig_plan.get("title", fig_id)
             plot_type = fig_plan.get("plot_type", "diagram").lower()
             objective = fig_plan.get("objective", "")
-            img_rel = f"figures/{fig_id}.jpg"
-            img_abs_path = resolve_safe_child_path(figures_dir, f"{fig_id}.jpg")
-            img_abs = str(img_abs_path)
-            os.makedirs(os.path.dirname(img_abs), exist_ok=True)
+            aspect_ratio = fig_plan.get("aspect_ratio", "16:9")
+
+            raw_bytes: bytes | None = None
+            ext: str | None = None
+            generated_by = "fallback"
 
             if "plot" in plot_type or "chart" in plot_type:
-                code_prompt = (
-                    f"{PLOT_PLANNER_AGENT_SYSTEM_PROMPT}\n\n"
-                    f"{PLOT_VISUALIZER_AGENT_SYSTEM_PROMPT}\n\n"
-                    f"Title: {title}\nObjective: {objective}\n"
-                    f"Raw Technical Notes & Benchmarks:\n{notes_text}\n\n"
-                    f"Write clean Python matplotlib code wrapped in ```python ... ```."
-                )
-                code_resp = await agent_fn(
-                    prompt=code_prompt,
-                    schema={"type": "string"},
-                    role=f"Benchmark Plotter: {fig_id}",
-                    model=plotting_model_tier,
-                )
-                current_code = str(code_resp)
-                b64_img = execute_plot_code_worker(current_code)
-
-                for critic_round in range(plotting_max_critic_rounds):
-                    if b64_img and critic_round > 0:
-                        break
-                    critic_prompt = (
-                        f"{PLOT_CRITIC_AGENT_SYSTEM_PROMPT}\n\n"
-                        f"Figure ID: {fig_id}\nTitle: {title}\nObjective: {objective}\n"
-                        f"Execution Succeeded: {bool(b64_img)}\n"
-                        f"Current Matplotlib Code:\n{current_code}\n\n"
-                        f"If the plot code is valid, self-contained, and matches the objective, reply 'No changes needed.' "
-                        f"Otherwise provide the corrected Python matplotlib code inside ```python ... ```."
+                if _find_matplotlib_python() is not None:
+                    code_prompt = (
+                        f"{PLOT_PLANNER_AGENT_SYSTEM_PROMPT}\n\n"
+                        f"{PLOT_VISUALIZER_AGENT_SYSTEM_PROMPT}\n\n"
+                        f"Title: {title}\nObjective: {objective}\nAspect Ratio: {aspect_ratio}\n"
+                        f"Raw Technical Notes & Benchmarks:\n{notes_text}\n\n"
+                        f"STRICT SANDBOX RULES:\n"
+                        f"- ONLY import from: matplotlib, matplotlib.pyplot, matplotlib.patches, "
+                        f"matplotlib.ticker, matplotlib.cm, matplotlib.colors, matplotlib.lines, "
+                        f"matplotlib.gridspec, matplotlib.patheffects, numpy, math, statistics.\n"
+                        f"- NEVER import os, sys, platform, pathlib, or matplotlib.font_manager "
+                        f"(Korean/Unicode fonts and minus signs are ALREADY pre-configured by the sandbox).\n"
+                        f"- NEVER call plt.savefig() or plt.show(); the sandbox captures the active figure automatically.\n"
+                        f"- Return ONLY clean, runnable Python code wrapped in ```python ... ```."
                     )
-                    critic_resp = await agent_fn(
-                        prompt=critic_prompt,
+                    code_resp = await agent_fn(
+                        prompt=code_prompt,
                         schema={"type": "string"},
-                        role=f"Plot Critic ({fig_id} r{critic_round + 1})",
+                        role=f"Benchmark Plotter: {fig_id}",
                         model=plotting_model_tier,
                     )
-                    critic_str = str(critic_resp).strip()
-                    if "no changes needed" in critic_str.lower() and b64_img:
-                        break
-                    if "```python" in critic_str:
-                        cand_b64 = execute_plot_code_worker(critic_str)
-                        if cand_b64:
-                            current_code = critic_str
-                            b64_img = cand_b64
-                            break
-
-                b64_img = b64_img or _fallback_diagram_png_base64(
-                    prompt=f"{title}\n{objective}"
-                )
-                with open(img_abs, "wb") as fh:
-                    fh.write(base64.b64decode(b64_img))
-            else:
-                diag_spec = f"Title: {title}\nObjective: {objective}\nArchitecture Context:\n{proposal_text}"
-                saved_valid_img = False
-                for _critic_round in range(max(1, plotting_max_critic_rounds)):
-                    diag_prompt = (
-                        f"{DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT}\n\n"
-                        f"Generate a crisp white-background technical architecture diagram for:\n"
-                        f"{diag_spec}\n\n"
-                        f"Return base64-encoded PNG/JPEG image bytes (never reference host paths outside this workspace)."
+                    current_code = str(code_resp)
+                    b64_img = execute_plot_code_worker(
+                        current_code, allow_placeholder_fallback=False
                     )
-                    try:
-                        diag_resp = await agent_fn(
-                            prompt=diag_prompt,
-                            schema={"type": "string"},
-                            role=f"Architecture Illustrator: {fig_id}",
-                            type_name=image_model_name,
-                        )
-                        raw_bytes = None
-                        if isinstance(diag_resp, bytes):
-                            raw_bytes = diag_resp
-                        elif isinstance(diag_resp, dict) and diag_resp.get("image_base64"):
-                            raw_bytes = base64.b64decode(diag_resp["image_base64"])
-                        elif isinstance(diag_resp, str):
-                            stripped = diag_resp.strip()
-                            # Strictly disallow copying arbitrary host filesystem paths; only decode image bytes
-                            # or read artifacts strictly staged inside figures_dir itself.
-                            try:
-                                cand_resolved = resolve_safe_child_path(
-                                    figures_dir, os.path.basename(stripped)
-                                )
-                                if (
-                                    os.path.isabs(stripped)
-                                    and os.path.abspath(stripped) == str(cand_resolved)
-                                    and cand_resolved.is_file()
-                                ):
-                                    with open(cand_resolved, "rb") as rf:
-                                        raw_bytes = rf.read()
-                            except ValueError:
-                                raw_bytes = None
 
-                            if raw_bytes is None and len(stripped) > 64 and "\n" not in stripped and "/" not in stripped[:16]:
-                                try:
-                                    b64_payload = stripped.split(",", 1)[-1]
-                                    raw_bytes = base64.b64decode(b64_payload, validate=True)
-                                except Exception:
-                                    raw_bytes = None
-
-                        if raw_bytes and detect_media_format(raw_bytes) in (".png", ".jpg"):
-                            with open(img_abs, "wb") as fh:
-                                fh.write(raw_bytes)
-                            saved_valid_img = True
+                    for critic_round in range(plotting_max_critic_rounds):
+                        if b64_img and critic_round > 0:
                             break
-                    except Exception:
-                        pass
-
-                if not saved_valid_img or not os.path.exists(img_abs) or os.path.getsize(img_abs) == 0:
-                    with open(img_abs, "wb") as fh:
-                        fh.write(
-                            base64.b64decode(
-                                _fallback_diagram_png_base64(
-                                    prompt=f"{title}\n{objective}"
-                                )
-                            )
+                        critic_prompt = (
+                            f"You are a Senior Performance Engineer & Matplotlib Code Reviewer.\n"
+                            f"Review the following Matplotlib plot code for numerical fidelity, clarity, and sandbox compliance.\n\n"
+                            f"Figure ID: {fig_id}\nTitle: {title}\nObjective: {objective}\n"
+                            f"Execution Succeeded: {bool(b64_img)}\n"
+                            f"Current Matplotlib Code:\n{current_code}\n\n"
+                            f"SANDBOX RULES: Only import matplotlib.pyplot/patches/ticker/lines/gridspec, numpy, math, statistics. "
+                            f"Do NOT import platform, os, sys, or font_manager. Do NOT call plt.savefig() or plt.show().\n\n"
+                            f"OUTPUT FORMAT: If Execution Succeeded is True and the plot code is valid and accurate, "
+                            f"reply with the exact text: No changes needed.\n"
+                            f"Otherwise reply ONLY with the corrected runnable Python code inside ```python ... ``` (do NOT wrap in JSON)."
                         )
+                        critic_resp = await agent_fn(
+                            prompt=critic_prompt,
+                            schema={"type": "string"},
+                            role=f"Plot Critic ({fig_id} r{critic_round + 1})",
+                            model=plotting_model_tier,
+                        )
+                        critic_str = str(critic_resp).strip()
+                        if "no changes needed" in critic_str.lower() and b64_img:
+                            break
+                        if "```python" in critic_str:
+                            cand_b64 = execute_plot_code_worker(
+                                critic_str, allow_placeholder_fallback=False
+                            )
+                            if cand_b64:
+                                current_code = critic_str
+                                b64_img = cand_b64
+                                break
+
+                    if b64_img:
+                        cand_bytes = base64.b64decode(b64_img)
+                        cand_fmt = detect_media_format(cand_bytes)
+                        if cand_fmt in (".png", ".jpg"):
+                            raw_bytes, ext = cand_bytes, cand_fmt
+                            generated_by = "matplotlib"
+
+                # If matplotlib is not installed or plot code failed, render a crisp data chart via image-generator
+                if raw_bytes is None:
+                    chart_prompt = (
+                        f"{PLOT_PLANNER_AGENT_SYSTEM_PROMPT}\n\n"
+                        f"Generate a crisp, publication-grade white-background engineering data chart image "
+                        f"(aspect ratio {aspect_ratio}) for:\n"
+                        f"Title: {title}\n"
+                        f"Objective: {objective}\n\n"
+                        f"Use ONLY the exact quantitative figures from the technical notes below (never fabricate numbers). "
+                        f"Keep labels sharp, legible, and clean with high contrast on a pure white background.\n\n"
+                        f"Technical Notes:\n{notes_text[:8000]}\n\n"
+                        f"Save the generated image file and return its exact absolute path in `image_path`."
+                    )
+                    raw_bytes, ext = await _generate_with_image_agent(
+                        fig_id=fig_id,
+                        visual_prompt=chart_prompt,
+                        role_label=f"Chart Illustrator: {fig_id}",
+                        max_attempts=min(2, max(1, plotting_max_critic_rounds)),
+                    )
+                    if raw_bytes and ext:
+                        generated_by = "image-generator"
+            else:
+                diag_spec = (
+                    f"Title: {title}\n"
+                    f"Objective: {objective}\n"
+                    f"Aspect Ratio: {aspect_ratio}\n"
+                    f"Architecture Context:\n{proposal_text[:6000]}"
+                )
+                diag_prompt = (
+                    f"{DIAGRAM_PLANNER_AGENT_SYSTEM_PROMPT}\n\n"
+                    f"Generate a crisp, pure white-background technical architecture diagram "
+                    f"(O'Reilly / DDIA editorial style, legible text, no baked-in figure number caption) for:\n"
+                    f"{diag_spec}\n\n"
+                    f"Save the generated image file and return its exact absolute path in `image_path`."
+                )
+                raw_bytes, ext = await _generate_with_image_agent(
+                    fig_id=fig_id,
+                    visual_prompt=diag_prompt,
+                    role_label=f"Architecture Illustrator: {fig_id}",
+                    max_attempts=min(2, max(1, plotting_max_critic_rounds)),
+                )
+                if raw_bytes and ext:
+                    generated_by = "image-generator"
+
+            if not raw_bytes or ext not in (".png", ".jpg"):
+                raw_bytes = base64.b64decode(
+                    _fallback_diagram_png_base64(prompt=f"{title}\n{objective}")
+                )
+                ext = ".png"
+                generated_by = "fallback"
+
+            filename = f"{fig_id}{ext}"
+            img_rel = f"figures/{filename}"
+            img_abs_path = resolve_safe_child_path(figures_dir, filename)
+            img_abs = str(img_abs_path)
+            os.makedirs(os.path.dirname(img_abs), exist_ok=True)
+            with open(img_abs, "wb") as fh:
+                fh.write(raw_bytes)
 
             caption = f"{title}: {objective}".strip(": ")
             return {
                 "figure_id": fig_id,
                 "title": title,
-                "name": f"{fig_id}.jpg",
+                "name": filename,
                 "image_path": img_rel,
                 "caption": caption,
+                "generated_by": generated_by,
+                "size_bytes": len(raw_bytes),
             }
 
         plot_results = await parallel_fn(plotting_plan, _generate_single_visual)
+        real_count = sum(1 for r in plot_results if r.get("generated_by") != "fallback")
+        log_fn(
+            f"Visual generation complete: {real_count}/{len(plot_results)} real images generated "
+            f"({len(plot_results) - real_count} fallback placeholders)."
+        )
         with open(
             os.path.join(base_dir, "plotting_results.json"), "w", encoding="utf-8"
         ) as f:

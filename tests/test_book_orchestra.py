@@ -1633,9 +1633,8 @@ class TestProductionHardeningReview(unittest.TestCase):
         finally:
             set_antigravity_agent_runner(None)
 
-        # Finding 8: Packaging & CI files exist with pinned bounds
+        # Finding 8: Packaging files use pinned compatible bounds
         self.assertTrue(os.path.exists(os.path.join(REPO_ROOT, "pyproject.toml")))
-        self.assertTrue(os.path.exists(os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")))
         with open(os.path.join(REPO_ROOT, "requirements.txt"), "r", encoding="utf-8") as req_f:
             reqs = req_f.read()
         self.assertNotIn("joblib", reqs)

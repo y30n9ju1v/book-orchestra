@@ -95,6 +95,7 @@ from utils.path_security import (
     resolve_safe_child_path,
     safe_prepare_managed_subdir,
     sanitize_slug,
+    validate_slide_output_workspace,
 )
 from utils.reference_verifier import (
     is_reference_before_cutoff,
@@ -227,8 +228,14 @@ def _load_slide_source_context(raw_materials_dir: str) -> tuple[dict, str]:
         locator = slide.get("source_locator") or f"slide {slide.get('slide_number', '?')}"
         title = slide.get("title") or "Untitled"
         figures = slide.get("figures") or []
+        authoring_status = (
+            "hidden; excluded from authoring"
+            if not slide.get("included_in_book", True)
+            else "included"
+        )
         outline_lines.append(
-            f"- {locator}: {title} (extracted visuals: {len(figures) if isinstance(figures, list) else 0})"
+            f"- {locator}: {title} ({authoring_status}; extracted visuals: "
+            f"{len(figures) if isinstance(figures, list) else 0})"
         )
     context = (
         "Source-deck provenance:\n"
@@ -236,6 +243,8 @@ def _load_slide_source_context(raw_materials_dir: str) -> tuple[dict, str]:
         f"- Type: {manifest.get('source_type', 'unknown')}\n"
         f"- SHA-256: {manifest.get('source_sha256', 'unknown')}\n"
         f"- Slide/page count: {manifest.get('slide_count', len(outline_lines))}\n"
+        f"- Included for authoring: {manifest.get('included_slide_count', len(outline_lines))}\n"
+        f"- Hidden/excluded: {manifest.get('hidden_slide_count', 0)}\n"
         "- Traceable sequence:\n"
         + "\n".join(outline_lines)
     )
@@ -671,6 +680,9 @@ async def run_book_orchestra_workflow(
         )
         from utils.slide_ingestion import prepare_slide_materials
 
+        validate_slide_output_workspace(
+            slides_path, latex_template_dir, base_dir_arg
+        )
         slide_result = prepare_slide_materials(
             slides_path,
             os.path.join(base_dir_arg, "raw_materials"),
@@ -681,7 +693,8 @@ async def run_book_orchestra_workflow(
         raw_materials_dir = slide_result["raw_materials_dir"]
         log_fn(
             "Prepared slide-grounded source materials: "
-            f"{slide_result['slide_count']} slides/pages and "
+            f"{slide_result['included_slide_count']} included slides/pages, "
+            f"{slide_result['hidden_slide_count']} hidden, and "
             f"{slide_result['extracted_figure_count']} reusable visuals."
         )
     else:
@@ -1759,6 +1772,12 @@ async def run_book_orchestra_workflow(
                         "source_type": slide_source_manifest.get("source_type"),
                         "source_sha256": slide_source_manifest.get("source_sha256"),
                         "slide_count": slide_source_manifest.get("slide_count"),
+                        "included_slide_count": slide_source_manifest.get(
+                            "included_slide_count"
+                        ),
+                        "hidden_slide_count": slide_source_manifest.get(
+                            "hidden_slide_count"
+                        ),
                         "manifest": "raw_materials/slide_source_manifest.json",
                     }
                     if slide_source_manifest

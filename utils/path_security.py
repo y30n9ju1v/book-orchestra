@@ -115,6 +115,22 @@ def sanitize_upload_filename(
     return safe_name, ext
 
 
+def sanitize_slide_source_filename(
+    raw_filename: str, fallback_ext: str = ".pptx"
+) -> str:
+    """Preserve a readable PPTX/PDF source name without allowing path traversal."""
+    base = Path(str(raw_filename or "lecture_slides.pptx").replace("\\", "/")).name
+    stem = Path(base).stem
+    extension = Path(base).suffix.lower()
+    allowed_extensions = {".pptx", ".pdf"}
+    if extension not in allowed_extensions:
+        extension = fallback_ext if fallback_ext in allowed_extensions else ".pptx"
+    safe_stem = re.sub(r"[^\w-]+", "_", stem, flags=re.UNICODE).strip("_-")
+    if not safe_stem:
+        safe_stem = "lecture_slides"
+    return f"{safe_stem[:120]}{extension}"
+
+
 def _write_marker(directory: Path, role: str) -> None:
     marker_path = directory / WORKSPACE_MARKER_FILENAME
     with open(marker_path, "w", encoding="utf-8") as f:
@@ -168,6 +184,65 @@ def safe_prepare_managed_subdir(target_dir: Path, role: str) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
     _write_marker(target_dir, role=role)
     return target_dir
+
+
+def validate_slide_output_workspace(
+    slides_file: str | os.PathLike,
+    latex_template_dir: str | os.PathLike,
+    output_dir: str | os.PathLike,
+) -> Tuple[Path, Path, Path]:
+    """Validate slide-source paths before creating or replacing generated materials."""
+    source_resolved = resolve_path(slides_file)
+    template_resolved = resolve_path(latex_template_dir)
+    output_resolved = resolve_path(output_dir)
+
+    if not source_resolved.exists() or not source_resolved.is_file():
+        raise ValueError(f"Slide source '{slides_file}' does not exist or is not a file.")
+    if not template_resolved.exists() or not template_resolved.is_dir():
+        raise ValueError(
+            f"LaTeX template directory '{latex_template_dir}' does not exist."
+        )
+    missing_template_files = [
+        filename
+        for filename in ("template.tex", "guidelines.md")
+        if not (template_resolved / filename).is_file()
+    ]
+    if missing_template_files:
+        raise ValueError(
+            f"LaTeX template directory '{template_resolved}' is missing required "
+            f"file(s): {', '.join(missing_template_files)}."
+        )
+    if output_resolved.exists() and not output_resolved.is_dir():
+        raise ValueError(f"Output path '{output_dir}' exists and is not a directory.")
+
+    target_raw_dir = (output_resolved / "raw_materials").resolve()
+    latex_writeup_dir = (output_resolved / "latex_writeup").resolve()
+    refinement_dir = (output_resolved / "content_refinement_workdir").resolve()
+    if is_within_directory(source_resolved, target_raw_dir):
+        raise ValueError(
+            "Slide source cannot be placed inside output_dir/raw_materials because "
+            "that managed directory is replaced during ingestion."
+        )
+    if is_within_directory(source_resolved, latex_writeup_dir) or is_within_directory(
+        source_resolved, refinement_dir
+    ):
+        raise ValueError("Slide source overlaps a managed output subdirectory.")
+    if template_resolved == output_resolved or output_resolved.is_relative_to(
+        template_resolved
+    ):
+        raise ValueError(
+            f"Output directory '{output_resolved}' cannot overlap latex_template_dir "
+            f"'{template_resolved}'."
+        )
+    if any(
+        template_resolved.is_relative_to(managed_dir)
+        for managed_dir in (target_raw_dir, latex_writeup_dir, refinement_dir)
+    ):
+        raise ValueError(
+            f"LaTeX template directory '{template_resolved}' overlaps managed output "
+            f"subdirectories in '{output_resolved}'."
+        )
+    return source_resolved, template_resolved, output_resolved
 
 
 def prepare_safe_output_workspace(

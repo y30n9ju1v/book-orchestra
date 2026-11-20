@@ -22,6 +22,7 @@ import os
 import posixpath
 import re
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ from utils.path_security import (
     detect_media_format,
     is_within_directory,
     resolve_path,
-    safe_prepare_managed_subdir,
+    safe_replace_managed_dir,
     sanitize_slug,
 )
 
@@ -47,8 +48,13 @@ _MAX_SOURCE_BYTES = 150 * 1024 * 1024
 _MAX_ZIP_MEMBERS = 5000
 _MAX_ZIP_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
 _MAX_XML_BYTES = 16 * 1024 * 1024
+_MAX_EMBEDDED_VISUAL_BYTES = 50 * 1024 * 1024
 _MAX_PDF_PAGES = 1000
+_MAX_RASTER_DIMENSION = 4096
+_MAX_RASTER_PIXELS = 16 * 1024 * 1024
 _SUPPORTED_SOURCE_EXTENSIONS = {".pptx", ".pdf"}
+_ZIP_READ_TOTAL_ATTR = "_book_orchestra_actual_uncompressed_bytes"
+_ZIP_MEMBER_NAMES_ATTR = "_book_orchestra_member_names"
 
 
 def _sha256(path: Path) -> str:
@@ -60,7 +66,7 @@ def _sha256(path: Path) -> str:
 
 
 def _clean_text(value: Any) -> str:
-    return re.sub(r"[\t\r ]+", " ", str(value or "")).strip()
+    return re.sub(r"[\t\r\u00a0 ]+", " ", str(value or "")).strip()
 
 
 def _unique_lines(lines: list[str]) -> list[str]:
@@ -72,15 +78,40 @@ def _unique_lines(lines: list[str]) -> list[str]:
     return result
 
 
-def _xml_from_zip(package: zipfile.ZipFile, member: str) -> ET.Element:
+def _read_zip_member_bounded(
+    package: zipfile.ZipFile, member: str, max_bytes: int
+) -> bytes:
     try:
         info = package.getinfo(member)
     except KeyError as exc:
         raise ValueError(f"PPTX package is missing required member '{member}'.") from exc
-    if info.file_size > _MAX_XML_BYTES:
-        raise ValueError(f"PPTX XML member '{member}' is unreasonably large.")
+    if info.file_size > max_bytes:
+        raise ValueError(f"PPTX member '{member}' exceeds the extraction safety limit.")
     try:
-        return ET.fromstring(package.read(member))
+        with package.open(info, "r") as member_stream:
+            data = member_stream.read(max_bytes + 1)
+    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"PPTX member '{member}' could not be read safely.") from exc
+    if len(data) > max_bytes:
+        raise ValueError(f"PPTX member '{member}' exceeds the extraction safety limit.")
+    total_read = int(getattr(package, _ZIP_READ_TOTAL_ATTR, 0)) + len(data)
+    if total_read > _MAX_ZIP_UNCOMPRESSED_BYTES:
+        raise ValueError("PPTX extraction exceeded the cumulative safety limit.")
+    setattr(package, _ZIP_READ_TOTAL_ATTR, total_read)
+    return data
+
+
+def _zip_member_names(package: zipfile.ZipFile) -> set[str]:
+    member_names = getattr(package, _ZIP_MEMBER_NAMES_ATTR, None)
+    if member_names is None:
+        member_names = set(package.namelist())
+        setattr(package, _ZIP_MEMBER_NAMES_ATTR, member_names)
+    return member_names
+
+
+def _xml_from_zip(package: zipfile.ZipFile, member: str) -> ET.Element:
+    try:
+        return ET.fromstring(_read_zip_member_bounded(package, member, _MAX_XML_BYTES))
     except ET.ParseError as exc:
         raise ValueError(f"PPTX XML member '{member}' is malformed.") from exc
 
@@ -88,7 +119,7 @@ def _xml_from_zip(package: zipfile.ZipFile, member: str) -> ET.Element:
 def _relationship_map(package: zipfile.ZipFile, owner_path: str) -> dict[str, dict[str, str]]:
     owner_dir = posixpath.dirname(owner_path)
     rels_path = posixpath.join(owner_dir, "_rels", posixpath.basename(owner_path) + ".rels")
-    if rels_path not in package.namelist():
+    if rels_path not in _zip_member_names(package):
         return {}
     root = _xml_from_zip(package, rels_path)
     result: dict[str, dict[str, str]] = {}
@@ -112,13 +143,13 @@ def _ordered_slide_paths(package: zipfile.ZipFile) -> list[str]:
     numbered_paths = sorted(
         (
             name
-            for name in package.namelist()
+            for name in _zip_member_names(package)
             if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
         ),
         key=lambda name: int(re.search(r"(\d+)", posixpath.basename(name)).group(1)),
     )
     presentation_path = "ppt/presentation.xml"
-    if presentation_path in package.namelist():
+    if presentation_path in _zip_member_names(package):
         root = _xml_from_zip(package, presentation_path)
         relationships = _relationship_map(package, presentation_path)
         ordered: list[str] = []
@@ -128,7 +159,7 @@ def _ordered_slide_paths(package: zipfile.ZipFile) -> list[str]:
             target = rel.get("target", "")
             if (
                 rel.get("type", "").endswith("/slide")
-                and target in package.namelist()
+                and target in _zip_member_names(package)
                 and target not in ordered
             ):
                 ordered.append(target)
@@ -137,22 +168,86 @@ def _ordered_slide_paths(package: zipfile.ZipFile) -> list[str]:
     return numbered_paths
 
 
+def _paragraph_text(paragraph: ET.Element) -> str:
+    parts: list[str] = []
+    for node in paragraph.iter():
+        if node.tag == f"{{{_A}}}t":
+            parts.append(node.text or "")
+        elif node.tag in {f"{{{_A}}}br", f"{{{_A}}}tab"}:
+            parts.append(" ")
+    return _clean_text("".join(parts))
+
+
 def _shape_paragraphs(shape: ET.Element) -> list[str]:
     return _unique_lines(
-        [
-            "".join(node.text or "" for node in paragraph.findall(".//a:t", _NS))
-            for paragraph in shape.findall(".//a:p", _NS)
-        ]
+        [_paragraph_text(paragraph) for paragraph in shape.findall(".//a:p", _NS)]
     )
 
 
-def _slide_title(root: ET.Element, text_lines: list[str], slide_number: int) -> str:
+def _layout_placeholder_types(
+    package: zipfile.ZipFile,
+    relationships: dict[str, dict[str, str]],
+    layout_cache: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    layout_target = next(
+        (
+            rel["target"]
+            for rel in relationships.values()
+            if rel["type"].endswith("/slideLayout")
+            and rel["target"] in _zip_member_names(package)
+        ),
+        None,
+    )
+    if not layout_target:
+        return {}
+    if layout_target in layout_cache:
+        return layout_cache[layout_target]
+    root = _xml_from_zip(package, layout_target)
+    placeholder_types: dict[str, str] = {}
     for shape in root.findall(".//p:sp", _NS):
         placeholder = shape.find("./p:nvSpPr/p:nvPr/p:ph", _NS)
-        if placeholder is not None and placeholder.get("type", "") in {"title", "ctrTitle"}:
+        if placeholder is None:
+            continue
+        placeholder_type = placeholder.get("type", "")
+        if not placeholder_type:
+            continue
+        placeholder_index = placeholder.get("idx", "")
+        existing_type = placeholder_types.get(placeholder_index, "")
+        if existing_type in {"title", "ctrTitle"} and placeholder_type not in {
+            "title",
+            "ctrTitle",
+        }:
+            continue
+        placeholder_types[placeholder_index] = placeholder_type
+    layout_cache[layout_target] = placeholder_types
+    return placeholder_types
+
+
+def _slide_title(
+    root: ET.Element,
+    text_lines: list[str],
+    slide_number: int,
+    inherited_placeholder_types: dict[str, str] | None = None,
+) -> str:
+    inherited_placeholder_types = inherited_placeholder_types or {}
+    named_title_candidates: list[str] = []
+    for shape in root.findall(".//p:sp", _NS):
+        placeholder = shape.find("./p:nvSpPr/p:nvPr/p:ph", _NS)
+        placeholder_type = ""
+        if placeholder is not None:
+            placeholder_type = placeholder.get("type", "") or inherited_placeholder_types.get(
+                placeholder.get("idx", ""), ""
+            )
+        if placeholder_type in {"title", "ctrTitle"}:
             title_lines = _shape_paragraphs(shape)
             if title_lines:
                 return title_lines[0]
+        name_node = shape.find("./p:nvSpPr/p:cNvPr", _NS)
+        shape_name = name_node.get("name", "") if name_node is not None else ""
+        if re.search(r"(?:^|\s)(?:title|제목|titre|titel)(?:\s|$)", shape_name, re.I):
+            named_title_candidates.extend(_shape_paragraphs(shape))
+    if named_title_candidates:
+        return named_title_candidates[0]
     return text_lines[0] if text_lines else f"Slide {slide_number}"
 
 
@@ -185,7 +280,8 @@ def _extract_notes(package: zipfile.ZipFile, relationships: dict[str, dict[str, 
         (
             rel["target"]
             for rel in relationships.values()
-            if rel["type"].endswith("/notesSlide") and rel["target"] in package.namelist()
+            if rel["type"].endswith("/notesSlide")
+            and rel["target"] in _zip_member_names(package)
         ),
         None,
     )
@@ -205,18 +301,77 @@ def _extract_notes(package: zipfile.ZipFile, relationships: dict[str, dict[str, 
 def _extract_chart_text(
     package: zipfile.ZipFile, relationships: dict[str, dict[str, str]]
 ) -> list[str]:
+    def cached_values(container: ET.Element | None) -> dict[int, str]:
+        if container is None:
+            return {}
+        indexed_values: dict[int, str] = {}
+        for point in container.findall(".//c:pt", _NS):
+            raw_index = point.get("idx", "0")
+            try:
+                point_index = int(raw_index)
+            except ValueError:
+                point_index = len(indexed_values)
+            value_node = point.find("./c:v", _NS)
+            if value_node is None:
+                value_node = point.find(".//a:t", _NS)
+            value = _clean_text(value_node.text if value_node is not None else "")
+            indexed_values[point_index] = value
+        if indexed_values:
+            return dict(sorted(indexed_values.items())[:500])
+        raw_values = [node.text or "" for node in container.findall(".//c:v", _NS)]
+        if not raw_values:
+            raw_values = [node.text or "" for node in container.findall(".//a:t", _NS)]
+        return {index: _clean_text(value) for index, value in enumerate(raw_values[:500])}
+
     charts: list[str] = []
     for rel in relationships.values():
         target = rel["target"]
-        if not rel["type"].endswith("/chart") or target not in package.namelist():
+        if not rel["type"].endswith("/chart") or target not in _zip_member_names(package):
             continue
         root = _xml_from_zip(package, target)
-        values = _unique_lines(
-            [node.text or "" for node in root.findall(".//a:t", _NS)]
-            + [node.text or "" for node in root.findall(".//c:v", _NS)]
+        chart_title = " ".join(
+            _unique_lines(
+                [node.text or "" for node in root.findall("./c:chart/c:title//a:t", _NS)]
+            )
         )
-        if values:
-            charts.append("Chart labels and cached values: " + ", ".join(values[:500]))
+        for series_index, series in enumerate(root.findall(".//c:ser", _NS), start=1):
+            series_name_values = cached_values(series.find("./c:tx", _NS))
+            series_name = next(
+                (value for value in series_name_values.values() if value),
+                f"Series {series_index}",
+            )
+            categories = cached_values(series.find("./c:cat", _NS))
+            values = cached_values(series.find("./c:val", _NS))
+            if not values:
+                x_values = cached_values(series.find("./c:xVal", _NS))
+                y_values = cached_values(series.find("./c:yVal", _NS))
+                if x_values and y_values:
+                    pairs = [
+                        f"x={x_values[point_index]}, y={y_values[point_index]}"
+                        for point_index in sorted(x_values.keys() & y_values.keys())
+                    ]
+                    charts.append(
+                        f"{chart_title + ' — ' if chart_title else ''}{series_name}: "
+                        + "; ".join(pairs)
+                    )
+                continue
+            if categories:
+                pairs = []
+                for point_index, value in sorted(values.items()):
+                    category = categories.get(point_index)
+                    if category is None:
+                        category = f"Point {point_index + 1}"
+                    elif not category:
+                        category = "(blank)"
+                    pairs.append(f"{category} = {value}")
+                chart_values = "; ".join(pairs)
+            else:
+                chart_values = "; ".join(
+                    value for _, value in sorted(values.items())
+                )
+            charts.append(
+                f"{chart_title + ' — ' if chart_title else ''}{series_name}: {chart_values}"
+            )
     return charts
 
 
@@ -226,13 +381,83 @@ def _extract_related_diagram_text(
     diagrams: list[str] = []
     for rel in relationships.values():
         target = rel["target"]
-        if not rel["type"].endswith("/diagramData") or target not in package.namelist():
+        if not rel["type"].endswith("/diagramData") or target not in _zip_member_names(
+            package
+        ):
             continue
         root = _xml_from_zip(package, target)
         values = _unique_lines([node.text or "" for node in root.findall(".//a:t", _NS)])
         if values:
             diagrams.append("SmartArt / diagram text: " + " | ".join(values))
     return diagrams
+
+
+def _bounded_render_scale(
+    width: float, height: float, preferred_scale: float = 2.0
+) -> float:
+    if width <= 0 or height <= 0:
+        raise ValueError("Visual canvas has invalid dimensions.")
+    dimension_scale = min(
+        _MAX_RASTER_DIMENSION / width,
+        _MAX_RASTER_DIMENSION / height,
+    )
+    pixel_scale = (_MAX_RASTER_PIXELS / (width * height)) ** 0.5
+    scale = min(preferred_scale, dimension_scale, pixel_scale)
+    if scale < 0.0001:
+        raise ValueError("Visual canvas dimensions are too large to rasterize safely.")
+    return scale
+
+
+def _render_fitz_page_png(page, fitz_module, preferred_scale: float = 2.0) -> bytes:
+    scale = _bounded_render_scale(
+        float(page.rect.width), float(page.rect.height), preferred_scale
+    )
+    pixmap = page.get_pixmap(
+        matrix=fitz_module.Matrix(scale, scale), colorspace=fitz_module.csRGB, alpha=False
+    )
+    return pixmap.tobytes("png")
+
+
+def _extract_pdf_image_bytes(document, fitz_module, image_tuple: tuple) -> bytes:
+    xref = int(image_tuple[0])
+    smask_xref = int(image_tuple[1] or 0)
+    width = int(image_tuple[2] or 0)
+    height = int(image_tuple[3] or 0)
+    if (
+        width <= 0
+        or height <= 0
+        or width > _MAX_RASTER_DIMENSION * 4
+        or height > _MAX_RASTER_DIMENSION * 4
+        or width * height > _MAX_RASTER_PIXELS
+    ):
+        raise ValueError("Embedded PDF image exceeds the raster safety limit.")
+
+    image_info = document.extract_image(xref)
+    extracted = image_info.get("image", b"")
+    detected_format = detect_media_format(extracted)
+    colorspace_metadata = image_info.get("colorspace")
+    colorspace_name = str(image_info.get("cs-name") or "").lower()
+    ordinary_colorspace = colorspace_metadata in {1, 3} and not any(
+        marker in colorspace_name for marker in ("cmyk", "indexed", "separation")
+    )
+    if not smask_xref and ordinary_colorspace and detected_format in {".png", ".jpg"}:
+        return extracted
+
+    base_pixmap = fitz_module.Pixmap(document, xref)
+    base_components = (
+        base_pixmap.colorspace.n if base_pixmap.colorspace is not None else 0
+    )
+    if base_components != 3:
+        base_pixmap = fitz_module.Pixmap(fitz_module.csRGB, base_pixmap)
+
+    pixmap = base_pixmap
+    if smask_xref:
+        try:
+            mask_pixmap = fitz_module.Pixmap(document, smask_xref)
+            pixmap = fitz_module.Pixmap(base_pixmap, mask_pixmap)
+        except Exception:
+            pixmap = base_pixmap
+    return pixmap.tobytes("png")
 
 
 def _write_figure(
@@ -248,10 +473,9 @@ def _write_figure(
 
             svg_document = fitz.open(stream=raw_bytes, filetype="svg")
             try:
-                pixmap = svg_document.load_page(0).get_pixmap(
-                    matrix=fitz.Matrix(2, 2), alpha=True
+                raw_bytes = _render_fitz_page_png(
+                    svg_document.load_page(0), fitz, preferred_scale=2.0
                 )
-                raw_bytes = pixmap.tobytes("png")
                 detected_extension = ".png"
             finally:
                 svg_document.close()
@@ -274,6 +498,7 @@ def _extract_pptx(source_path: Path, figures_dir: Path) -> tuple[list[dict], lis
         raise ValueError("The supplied .pptx file is not a valid PowerPoint package.") from exc
 
     with package:
+        setattr(package, _ZIP_READ_TOTAL_ATTR, 0)
         infos = package.infolist()
         if len(infos) > _MAX_ZIP_MEMBERS:
             raise ValueError("The PPTX package contains too many members.")
@@ -287,13 +512,24 @@ def _extract_pptx(source_path: Path, figures_dir: Path) -> tuple[list[dict], lis
             raise ValueError("The PPTX contains no readable slides.")
 
         extracted_hashes: dict[str, str] = {}
+        layout_cache: dict[str, dict[str, str]] = {}
         for slide_number, slide_path in enumerate(slide_paths, start=1):
             root = _xml_from_zip(package, slide_path)
             relationships = _relationship_map(package, slide_path)
+            inherited_placeholder_types = _layout_placeholder_types(
+                package, relationships, layout_cache
+            )
+            hidden = root.get("show", "1").strip().lower() in {"0", "false", "off"}
             text_lines: list[str] = []
             for shape in root.findall(".//p:sp", _NS):
                 text_lines.extend(_shape_paragraphs(shape))
             text_lines = _unique_lines(text_lines)
+            slide_title = _slide_title(
+                root,
+                text_lines,
+                slide_number,
+                inherited_placeholder_types,
+            )
             tables = _extract_slide_tables(root)
             chart_text = _extract_chart_text(package, relationships)
             diagram_text = _extract_related_diagram_text(package, relationships)
@@ -302,15 +538,21 @@ def _extract_pptx(source_path: Path, figures_dir: Path) -> tuple[list[dict], lis
             seen_rel_ids: set[str] = set()
             visual_ordinal = 0
             for blip in root.findall(".//a:blip", _NS):
+                if hidden:
+                    break
                 rel_id = blip.get(f"{{{_R}}}embed")
                 if not rel_id or rel_id in seen_rel_ids:
                     continue
                 seen_rel_ids.add(rel_id)
                 rel = relationships.get(rel_id, {})
                 target = rel.get("target", "")
-                if not rel.get("type", "").endswith("/image") or target not in package.namelist():
+                if not rel.get("type", "").endswith("/image") or target not in _zip_member_names(
+                    package
+                ):
                     continue
-                raw_bytes = package.read(target)
+                raw_bytes = _read_zip_member_bounded(
+                    package, target, _MAX_EMBEDDED_VISUAL_BYTES
+                )
                 content_hash = hashlib.sha256(raw_bytes).hexdigest()
                 if content_hash in extracted_hashes:
                     visual_names.append(extracted_hashes[content_hash])
@@ -325,14 +567,16 @@ def _extract_pptx(source_path: Path, figures_dir: Path) -> tuple[list[dict], lis
                 extracted_hashes[content_hash] = figure_name
                 visual_names.append(figure_name)
                 figure_info.append(
-                    _figure_metadata(figure_name, slide_number, _slide_title(root, text_lines, slide_number))
+                    _figure_metadata(figure_name, slide_number, slide_title)
                 )
 
             slides.append(
                 {
                     "slide_number": slide_number,
                     "source_locator": f"slide {slide_number}",
-                    "title": _slide_title(root, text_lines, slide_number),
+                    "title": slide_title,
+                    "hidden": hidden,
+                    "included_in_book": not hidden,
                     "visible_text": text_lines,
                     "tables": tables,
                     "chart_data": chart_text,
@@ -385,9 +629,7 @@ def _extract_pdf(source_path: Path, figures_dir: Path) -> tuple[list[dict], list
                 if largest_area / page_area < 0.04:
                     continue
                 try:
-                    image_data = document.extract_image(xref).get("image", b"")
-                    if detect_media_format(image_data) not in {".png", ".jpg"}:
-                        image_data = fitz.Pixmap(document, xref).tobytes("png")
+                    image_data = _extract_pdf_image_bytes(document, fitz, image_tuple)
                 except Exception:
                     continue
                 content_hash = hashlib.sha256(image_data).hexdigest()
@@ -403,11 +645,35 @@ def _extract_pdf(source_path: Path, figures_dir: Path) -> tuple[list[dict], list
                 extracted_hashes[content_hash] = figure_name
                 visual_names.append(figure_name)
                 figure_info.append(_figure_metadata(figure_name, slide_number, title))
+
+            drawings = page.get_drawings()
+            drawing_item_count = sum(len(drawing.get("items", [])) for drawing in drawings)
+            sparse_text = len(text_lines) <= 12 or len(" ".join(text_lines)) <= 800
+            if not visual_names and sparse_text and (
+                len(drawings) >= 3 or drawing_item_count >= 8
+            ):
+                try:
+                    page_image = _render_fitz_page_png(page, fitz, preferred_scale=2.0)
+                    figure_name = _write_figure(
+                        figures_dir, page_image, slide_number, 1
+                    )
+                except Exception:
+                    figure_name = None
+                if figure_name:
+                    visual_names.append(figure_name)
+                    metadata = _figure_metadata(figure_name, slide_number, title)
+                    metadata["visual_kind"] = "rendered_vector_slide"
+                    metadata["pedagogical_purpose"] = (
+                        "Preserve a vector diagram that could not be extracted as a standalone image"
+                    )
+                    figure_info.append(metadata)
             slides.append(
                 {
                     "slide_number": slide_number,
                     "source_locator": f"page {slide_number}",
                     "title": title,
+                    "hidden": False,
+                    "included_in_book": True,
                     "visible_text": text_lines,
                     "tables": [],
                     "chart_data": [],
@@ -447,7 +713,9 @@ def _build_proposal(
     author_voice: str,
 ) -> str:
     outline = "\n".join(
-        f"- {slide['source_locator']}: {slide['title']}" for slide in slides
+        f"- {slide['source_locator']}: {slide['title']}"
+        for slide in slides
+        if slide.get("included_in_book", True)
     )
     return f"""# Book Proposal: {title}
 
@@ -483,6 +751,11 @@ who was not present for the lecture.
 
 
 def _build_notes(slides: list[dict]) -> str:
+    hidden_locators = [
+        slide["source_locator"]
+        for slide in slides
+        if not slide.get("included_in_book", True)
+    ]
     sections = [
         "# Slide-grounded technical notes",
         "",
@@ -490,7 +763,18 @@ def _build_notes(slides: list[dict]) -> str:
         "Visible text, speaker notes, tables, chart caches, and extracted figures remain distinct so",
         "the author can judge what the audience actually saw and what the lecturer supplied as context.",
     ]
+    if hidden_locators:
+        sections.extend(
+            [
+                "",
+                "Hidden source slides excluded from authoring: "
+                + ", ".join(hidden_locators)
+                + ". Their metadata remains in slide_source_manifest.json for provenance.",
+            ]
+        )
     for slide in slides:
+        if not slide.get("included_in_book", True):
+            continue
         sections.extend(
             [
                 "",
@@ -546,62 +830,81 @@ def prepare_slide_materials(
     if is_within_directory(source_path, materials_dir):
         raise ValueError("Slide source must be outside the generated raw-materials directory.")
 
-    safe_prepare_managed_subdir(materials_dir, role="slide_materials")
-    figures_dir = materials_dir / "figures"
-    source_dir = materials_dir / "source_slides"
-    figures_dir.mkdir(parents=True, exist_ok=True)
-    source_dir.mkdir(parents=True, exist_ok=True)
+    materials_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(
+        tempfile.mkdtemp(prefix=".slide_materials_", dir=str(materials_dir.parent))
+    )
+    try:
+        figures_dir = staging_dir / "figures"
+        source_dir = staging_dir / "source_slides"
+        figures_dir.mkdir(parents=True, exist_ok=True)
+        source_dir.mkdir(parents=True, exist_ok=True)
 
-    if extension == ".pptx":
-        slides, figure_info = _extract_pptx(source_path, figures_dir)
-        source_type = "pptx"
-    else:
-        slides, figure_info = _extract_pdf(source_path, figures_dir)
-        source_type = "pdf"
+        if extension == ".pptx":
+            slides, figure_info = _extract_pptx(source_path, figures_dir)
+            source_type = "pptx"
+        else:
+            slides, figure_info = _extract_pdf(source_path, figures_dir)
+            source_type = "pdf"
 
-    inferred_title = title or next(
-        (slide["title"] for slide in slides if slide.get("title")), source_path.stem
-    )
-    safe_source_name = f"{sanitize_slug(source_path.stem, default='lecture_slides')}{extension}"
-    copied_source = source_dir / safe_source_name
-    shutil.copy2(source_path, copied_source)
+        included_slides = [
+            slide for slide in slides if slide.get("included_in_book", True)
+        ]
+        if not included_slides:
+            raise ValueError("The slide source contains no visible slides to author from.")
+        inferred_title = title or next(
+            (slide["title"] for slide in included_slides if slide.get("title")),
+            source_path.stem,
+        )
+        safe_source_name = (
+            f"{sanitize_slug(source_path.stem, default='lecture_slides')}{extension}"
+        )
+        copied_source = source_dir / safe_source_name
+        shutil.copy2(source_path, copied_source)
 
-    manifest = {
-        "schema_version": 1,
-        "source_file": source_path.name,
-        "preserved_source": f"source_slides/{safe_source_name}",
-        "source_type": source_type,
-        "source_sha256": _sha256(source_path),
-        "book_title": inferred_title,
-        "slide_count": len(slides),
-        "extracted_figure_count": len(figure_info),
-        "slides": slides,
-    }
-    (materials_dir / "book_proposal.md").write_text(
-        _build_proposal(
-            source_path.name,
-            inferred_title,
-            slides,
-            target_audience,
-            book_style,
-            author_voice,
-        ),
-        encoding="utf-8",
-    )
-    (materials_dir / "technical_notes.md").write_text(
-        _build_notes(slides), encoding="utf-8"
-    )
-    (materials_dir / "slide_source_manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    (figures_dir / "info.json").write_text(
-        json.dumps(figure_info, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+        manifest = {
+            "schema_version": 1,
+            "source_file": source_path.name,
+            "preserved_source": f"source_slides/{safe_source_name}",
+            "source_type": source_type,
+            "source_sha256": _sha256(source_path),
+            "book_title": inferred_title,
+            "slide_count": len(slides),
+            "included_slide_count": len(included_slides),
+            "hidden_slide_count": len(slides) - len(included_slides),
+            "extracted_figure_count": len(figure_info),
+            "slides": slides,
+        }
+        (staging_dir / "book_proposal.md").write_text(
+            _build_proposal(
+                source_path.name,
+                inferred_title,
+                slides,
+                target_audience,
+                book_style,
+                author_voice,
+            ),
+            encoding="utf-8",
+        )
+        (staging_dir / "technical_notes.md").write_text(
+            _build_notes(slides), encoding="utf-8"
+        )
+        (staging_dir / "slide_source_manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        (figures_dir / "info.json").write_text(
+            json.dumps(figure_info, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        safe_replace_managed_dir(staging_dir, materials_dir, role="slide_materials")
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
     return {
         "raw_materials_dir": str(materials_dir),
         "proposal_path": str(materials_dir / "book_proposal.md"),
         "technical_notes_path": str(materials_dir / "technical_notes.md"),
         "manifest_path": str(materials_dir / "slide_source_manifest.json"),
         "slide_count": len(slides),
+        "included_slide_count": len(included_slides),
+        "hidden_slide_count": len(slides) - len(included_slides),
         "extracted_figure_count": len(figure_info),
     }

@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import subprocess
@@ -296,10 +297,10 @@ async def fetch():
        xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <p:cSld><p:spTree>
-    <p:sp><p:nvSpPr><p:cNvPr id="1" name="Title"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+    <p:sp><p:nvSpPr><p:cNvPr id="1" name="Heading"/><p:cNvSpPr/><p:nvPr><p:ph/></p:nvPr></p:nvSpPr>
       <p:txBody><a:p><a:r><a:t>Async Foundations</a:t></a:r></a:p></p:txBody></p:sp>
     <p:sp><p:nvSpPr><p:cNvPr id="2" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
-      <p:txBody><a:p><a:r><a:t>Tasks are scheduled cooperatively</a:t></a:r></a:p></p:txBody></p:sp>
+      <p:txBody><a:p><a:r><a:t>Tasks are scheduled cooperatively</a:t></a:r><a:br/><a:r><a:t>with backpressure</a:t></a:r></a:p></p:txBody></p:sp>
     <p:pic><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic>
   </p:spTree></p:cSld>
 </p:sld>"""
@@ -307,6 +308,8 @@ async def fetch():
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
 </Relationships>"""
         notes_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -323,7 +326,25 @@ async def fetch():
         ).replace(
             '<p:pic><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic>',
             "",
-        )
+        ).replace("<p:sld ", '<p:sld show="0" ', 1)
+        layout_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp><p:nvSpPr><p:cNvPr id="1" name="Layout heading"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr></p:sp>
+    <p:sp><p:nvSpPr><p:cNvPr id="2" name="Footer"/><p:cNvSpPr/><p:nvPr><p:ph type="ftr"/></p:nvPr></p:nvSpPr></p:sp>
+  </p:spTree></p:cSld>
+</p:sldLayout>"""
+        chart_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Throughput</a:t></a:r></a:p></c:rich></c:tx></c:title>
+    <c:plotArea><c:barChart><c:ser>
+      <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>workers</c:v></c:pt></c:strCache></c:strRef></c:tx>
+      <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v></c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:strCache></c:strRef></c:cat>
+      <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>19</c:v></c:pt></c:numCache></c:numRef></c:val>
+    </c:ser></c:barChart></c:plotArea>
+  </c:chart>
+</c:chartSpace>"""
         presentation_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
                 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -347,6 +368,8 @@ async def fetch():
                     "ppt/_rels/presentation.xml.rels", presentation_rels_xml
                 )
                 package.writestr("ppt/notesSlides/notesSlide1.xml", notes_xml)
+                package.writestr("ppt/slideLayouts/slideLayout1.xml", layout_xml)
+                package.writestr("ppt/charts/chart1.xml", chart_xml)
                 package.writestr(
                     "ppt/media/image1.png",
                     base64.b64decode(_minimal_png_base64()),
@@ -360,11 +383,23 @@ async def fetch():
             )
 
             self.assertEqual(result["slide_count"], 2)
+            self.assertEqual(result["included_slide_count"], 1)
+            self.assertEqual(result["hidden_slide_count"], 1)
             self.assertEqual(result["extracted_figure_count"], 1)
             with open(result["manifest_path"], "r", encoding="utf-8") as stream:
                 manifest = json.load(stream)
             self.assertEqual(manifest["slides"][0]["title"], "Course Orientation")
+            self.assertTrue(manifest["slides"][0]["hidden"])
+            self.assertFalse(manifest["slides"][0]["included_in_book"])
             self.assertEqual(manifest["slides"][1]["title"], "Async Foundations")
+            self.assertEqual(
+                manifest["slides"][1]["visible_text"][1],
+                "Tasks are scheduled cooperatively with backpressure",
+            )
+            self.assertEqual(
+                manifest["slides"][1]["chart_data"],
+                ["Throughput — workers: (blank) = 10; 2 = 19"],
+            )
             self.assertEqual(
                 manifest["slides"][1]["speaker_notes"],
                 "Compare a task switch with an OS thread switch.",
@@ -379,10 +414,13 @@ async def fetch():
                 proposal = stream.read()
             self.assertIn("do not write a slide-by-slide transcript", proposal)
             self.assertIn("concrete analogies", proposal)
+            self.assertNotIn("Course Orientation", proposal)
             with open(result["technical_notes_path"], "r", encoding="utf-8") as stream:
                 notes = stream.read()
-            self.assertIn("Tasks are scheduled cooperatively", notes)
+            self.assertIn("Tasks are scheduled cooperatively with backpressure", notes)
             self.assertIn("Compare a task switch", notes)
+            self.assertIn("Hidden source slides excluded", notes)
+            self.assertNotIn("How to use this course", notes)
             self.assertIn("figures/slide_002_visual_01.png", notes)
 
             with open(
@@ -394,6 +432,9 @@ async def fetch():
             self.assertEqual(figure_info[0]["source_slide"], 2)
             self.assertEqual(figure_info[0]["generated_by"], "slide_ingestion")
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("fitz"), "PyMuPDF is not installed"
+    )
     def test_pdf_slide_ingestion_extracts_page_text_and_large_visual(self):
         import base64
         import fitz
@@ -411,14 +452,23 @@ async def fetch():
                 fitz.Rect(60, 130, 500, 390),
                 stream=base64.b64decode(_minimal_png_base64()),
             )
+            vector_page = document.new_page(width=800, height=450)
+            vector_page.insert_text((60, 60), "Vector-only request flow", fontsize=24)
+            vector_page.draw_rect(fitz.Rect(60, 120, 220, 230))
+            vector_page.draw_rect(fitz.Rect(320, 120, 480, 230))
+            vector_page.draw_rect(fitz.Rect(580, 120, 740, 230))
+            for offset in range(8):
+                vector_page.draw_line(
+                    fitz.Point(220 + offset, 175), fitz.Point(320 + offset, 175)
+                )
             document.save(deck_path)
             document.close()
 
             result = prepare_slide_materials(
                 deck_path, os.path.join(tmpdir, "generated", "raw_materials")
             )
-            self.assertEqual(result["slide_count"], 1)
-            self.assertEqual(result["extracted_figure_count"], 1)
+            self.assertEqual(result["slide_count"], 2)
+            self.assertEqual(result["extracted_figure_count"], 2)
             with open(result["manifest_path"], "r", encoding="utf-8") as stream:
                 manifest = json.load(stream)
             self.assertEqual(manifest["source_type"], "pdf")
@@ -426,6 +476,143 @@ async def fetch():
                 "Event Loop Mental Model", manifest["slides"][0]["visible_text"]
             )
             self.assertTrue(manifest["slides"][0]["figures"])
+            self.assertTrue(manifest["slides"][1]["figures"])
+            with open(
+                os.path.join(tmpdir, "generated", "raw_materials", "figures", "info.json"),
+                "r",
+                encoding="utf-8",
+            ) as stream:
+                figure_info = json.load(stream)
+            self.assertEqual(figure_info[1]["visual_kind"], "rendered_vector_slide")
+
+    def test_pdf_slide_ingestion_reports_missing_pymupdf(self):
+        from utils.slide_ingestion import _extract_pdf
+
+        with patch.dict("sys.modules", {"fitz": None}):
+            with self.assertRaisesRegex(RuntimeError, "PyMuPDF is required"):
+                _extract_pdf("missing.pdf", "unused-figures")
+
+    def test_pdf_image_extraction_fast_path_and_cmyk_mask_order(self):
+        from utils.slide_ingestion import _extract_pdf_image_bytes
+
+        png_bytes = b"\x89PNG\r\n\x1a\nfixture"
+
+        class FakeDocument:
+            def __init__(self, colorspace):
+                self.colorspace = colorspace
+
+            def extract_image(self, _xref):
+                return {
+                    "image": png_bytes,
+                    "colorspace": self.colorspace,
+                    "cs-name": "DeviceRGB" if self.colorspace == 3 else "DeviceCMYK",
+                }
+
+        class ColorSpace:
+            def __init__(self, components):
+                self.n = components
+
+        class FakePixmap:
+            def __init__(self, components, payload):
+                self.colorspace = ColorSpace(components)
+                self.payload = payload
+
+            def tobytes(self, _format):
+                return self.payload
+
+        class FastPathFitz:
+            csRGB = object()
+
+            @staticmethod
+            def Pixmap(*_args):
+                raise AssertionError("RGB fast path must not allocate a Pixmap")
+
+        self.assertEqual(
+            _extract_pdf_image_bytes(
+                FakeDocument(3), FastPathFitz, (7, 0, 100, 100)
+            ),
+            png_bytes,
+        )
+
+        calls = []
+        cmyk = FakePixmap(4, b"cmyk")
+        rgb = FakePixmap(3, b"rgb")
+        mask = FakePixmap(1, b"mask")
+        combined = FakePixmap(3, b"combined")
+
+        class MaskedFitz:
+            csRGB = object()
+
+            @staticmethod
+            def Pixmap(*args):
+                calls.append(args)
+                if args == (document, 7):
+                    return cmyk
+                if args == (MaskedFitz.csRGB, cmyk):
+                    return rgb
+                if args == (document, 8):
+                    return mask
+                if args == (rgb, mask):
+                    return combined
+                raise AssertionError(f"Unexpected Pixmap call: {args}")
+
+        document = FakeDocument(4)
+        self.assertEqual(
+            _extract_pdf_image_bytes(document, MaskedFitz, (7, 8, 100, 100)),
+            b"combined",
+        )
+        self.assertEqual(calls[0], (document, 7))
+        self.assertEqual(calls[1], (MaskedFitz.csRGB, cmyk))
+        self.assertEqual(calls[2], (document, 8))
+        self.assertEqual(calls[3], (rgb, mask))
+
+    def test_slide_ingestion_bounded_zip_reads_and_preflight_validation(self):
+        from utils.path_security import (
+            sanitize_slide_source_filename,
+            validate_slide_output_workspace,
+        )
+        from utils.slide_ingestion import (
+            _bounded_render_scale,
+            _read_zip_member_bounded,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = os.path.join(tmpdir, "bounded.zip")
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("large.bin", b"0123456789")
+                archive.writestr("second.bin", b"abcdefghij")
+            with zipfile.ZipFile(archive_path) as archive:
+                with self.assertRaisesRegex(ValueError, "safety limit"):
+                    _read_zip_member_bounded(archive, "large.bin", 5)
+            with zipfile.ZipFile(archive_path) as archive, patch(
+                "utils.slide_ingestion._MAX_ZIP_UNCOMPRESSED_BYTES", 15
+            ):
+                self.assertEqual(
+                    _read_zip_member_bounded(archive, "large.bin", 10),
+                    b"0123456789",
+                )
+                with self.assertRaisesRegex(ValueError, "cumulative safety limit"):
+                    _read_zip_member_bounded(archive, "second.bin", 10)
+
+            scale = _bounded_render_scale(100_000, 100_000)
+            self.assertLessEqual(100_000 * scale, 4096)
+            self.assertLessEqual((100_000 * scale) ** 2, 16 * 1024 * 1024)
+            with self.assertRaisesRegex(ValueError, "too large"):
+                _bounded_render_scale(100_000_000_000, 100_000_000_000)
+
+            slide_path = os.path.join(tmpdir, "lecture.pptx")
+            with open(slide_path, "wb") as stream:
+                stream.write(b"PK\x03\x04")
+            output_path = os.path.join(tmpdir, "output")
+            with self.assertRaisesRegex(ValueError, "LaTeX template directory"):
+                validate_slide_output_workspace(
+                    slide_path, os.path.join(tmpdir, "missing-template"), output_path
+                )
+            self.assertFalse(os.path.exists(output_path))
+            self.assertEqual(
+                sanitize_slide_source_filename("../week03 async.pptx"),
+                "week03_async.pptx",
+            )
 
 
 class TestEndToEndMockedBookPipeline(unittest.TestCase):
@@ -692,7 +879,6 @@ Compute concurrency limits for FP8 KV cache on 8x80GB H100 nodes.
             self.assertIn("Bounded Token Queue", md_out)
 
     def test_write_single_book_with_plotting_mocked(self):
-        import base64
         from methods.book_writer_with_plotting import write_single_book
         from utils.diagram_plot_utils import _minimal_png_base64
 
@@ -1817,8 +2003,6 @@ class TestProductionHardeningReview(unittest.TestCase):
         self.assertIn(">=", reqs)
 
     def test_7_image_generator_contract_security_and_plot_fallback(self):
-        import asyncio
-        import base64
         from utils.diagram_plot_utils import (
             UnsafePlotCodeError,
             validate_plot_code_ast,

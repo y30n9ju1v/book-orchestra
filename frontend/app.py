@@ -20,6 +20,7 @@ import time
 import threading
 import subprocess
 import shutil
+import tempfile
 import datetime
 import io
 import zipfile
@@ -426,14 +427,22 @@ def handle_live_execution(
                 os.makedirs(figures_directory, exist_ok=True)
 
             slide_source_path = None
+            slide_upload_dir = None
             if has_slide_source:
                 slide_extension = os.path.splitext(
                     st.session_state.get("saved_slide_name") or "lecture.pptx"
                 )[1].lower()
                 if slide_extension not in (".pptx", ".pdf"):
                     slide_extension = ".pptx"
+                from utils.path_security import sanitize_slide_source_filename
+
+                slide_upload_dir = tempfile.mkdtemp(prefix="book_orchestra_slide_")
+                safe_slide_name = sanitize_slide_source_filename(
+                    st.session_state.get("saved_slide_name") or "lecture.pptx",
+                    fallback_ext=slide_extension,
+                )
                 slide_source_path = os.path.join(
-                    run_directory, f"uploaded_lecture{slide_extension}"
+                    slide_upload_dir, safe_slide_name
                 )
 
             command = [
@@ -491,6 +500,7 @@ def handle_live_execution(
                 figures_list,
                 slide_bytes,
                 slide_path,
+                slide_temp_dir,
             ):
                 try:
                     preexec_fn = None
@@ -651,6 +661,10 @@ def handle_live_execution(
                         "Editorial Review Board"
                     ] += f"\n❌ Error in thread: {exception_object}"
                 finally:
+                    if slide_temp_dir and os.path.basename(slide_temp_dir).startswith(
+                        "book_orchestra_slide_"
+                    ):
+                        shutil.rmtree(slide_temp_dir, ignore_errors=True)
                     st.session_state.running = False
                     st.session_state.thread_started = False
 
@@ -666,6 +680,7 @@ def handle_live_execution(
                     list(st.session_state.figures),
                     st.session_state.get("saved_slide_bytes"),
                     slide_source_path,
+                    slide_upload_dir,
                 ),
             )
             add_script_run_ctx(worker_thread)
@@ -722,6 +737,10 @@ if not st.session_state.get("hide_inputs"):
             st.session_state.slide_source_bytes = None
             st.session_state.slide_source_name = None
 
+        manual_inputs_disabled = st.session_state.locked or bool(
+            st.session_state.get("slide_source_bytes")
+        )
+
         column_1, column_2 = st.columns(2)
 
         with column_1:
@@ -729,7 +748,7 @@ if not st.session_state.get("hide_inputs"):
             idea_input_type = st.radio(
                 "Proposal Input Type",
                 ["Text", "Upload"],
-                disabled=st.session_state.locked,
+                disabled=manual_inputs_disabled,
                 key="idea_input_type_main",
             )
             if idea_input_type == "Text":
@@ -741,7 +760,7 @@ if not st.session_state.get("hide_inputs"):
                     "Book Proposal",
                     key="idea_text_main",
                     label_visibility="collapsed",
-                    disabled=st.session_state.locked,
+                    disabled=manual_inputs_disabled,
                     height=300,
                 )
             else:
@@ -753,7 +772,7 @@ if not st.session_state.get("hide_inputs"):
                     "Upload Proposal",
                     type=["md", "txt"],
                     label_visibility="collapsed",
-                    disabled=st.session_state.locked,
+                    disabled=manual_inputs_disabled,
                     key="idea_uploader_main",
                 )
                 if uploaded_idea:
@@ -766,7 +785,7 @@ if not st.session_state.get("hide_inputs"):
             log_input_type = st.radio(
                 "Technical Notes Input Type",
                 ["Text", "Upload"],
-                disabled=st.session_state.locked,
+                disabled=manual_inputs_disabled,
                 key="log_input_type_main",
             )
             if log_input_type == "Text":
@@ -778,7 +797,7 @@ if not st.session_state.get("hide_inputs"):
                     "Technical Notes",
                     key="log_text_main",
                     label_visibility="collapsed",
-                    disabled=st.session_state.locked,
+                    disabled=manual_inputs_disabled,
                     height=300,
                 )
             else:
@@ -790,7 +809,7 @@ if not st.session_state.get("hide_inputs"):
                     "Upload Technical Notes",
                     type=["md", "txt"],
                     label_visibility="collapsed",
-                    disabled=st.session_state.locked,
+                    disabled=manual_inputs_disabled,
                     key="log_uploader_main",
                 )
                 if uploaded_log:
@@ -807,13 +826,13 @@ if not st.session_state.get("hide_inputs"):
             figure_file = st.file_uploader(
                 "Upload figure",
                 type=["png", "jpg", "jpeg", "pdf"],
-                disabled=st.session_state.locked,
+                disabled=manual_inputs_disabled,
                 key="figure_uploader_main",
             )
         with figure_column_2:
             figure_caption = st.text_input(
                 "Diagram / Plot Caption",
-                disabled=st.session_state.locked,
+                disabled=manual_inputs_disabled,
                 key="figure_caption_main",
             )
 

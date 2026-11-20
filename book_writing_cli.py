@@ -165,13 +165,19 @@ def main(argv=None):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_dir = f"./book_output_{timestamp}"
 
-    from utils.path_security import prepare_safe_output_workspace
+    from utils.path_security import (
+        prepare_safe_output_workspace,
+        validate_slide_output_workspace,
+    )
 
     raw_materials_dir = args.raw_materials_dir
     if args.slides_file:
         from utils.slide_ingestion import prepare_slide_materials
 
         try:
+            validate_slide_output_workspace(
+                args.slides_file, args.latex_template_dir, base_dir
+            )
             slide_result = prepare_slide_materials(
                 args.slides_file,
                 os.path.join(base_dir, "raw_materials"),
@@ -182,7 +188,8 @@ def main(argv=None):
             raw_materials_dir = slide_result["raw_materials_dir"]
             print(
                 "📚 Prepared slide-grounded source materials "
-                f"({slide_result['slide_count']} slides, "
+                f"({slide_result['included_slide_count']} included slides/pages, "
+                f"{slide_result['hidden_slide_count']} hidden, "
                 f"{slide_result['extracted_figure_count']} reusable visuals)."
             )
         except (OSError, RuntimeError, ValueError) as err:

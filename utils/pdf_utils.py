@@ -1179,6 +1179,7 @@ def compile_latex(
         return False
 
     engine = detect_latex_engine()
+    preview_reason = None
     contains_cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", tex_content))
     if engine == "pdflatex" and contains_cjk:
         if strict_latex:
@@ -1191,6 +1192,7 @@ def compile_latex(
             "[yellow]pdfLaTeX was found but the manuscript contains CJK text; "
             "using the Unicode preview renderer instead.[/yellow]"
         )
+        preview_reason = "pdfLaTeX cannot safely typeset the CJK manuscript"
         engine = None
     if engine is not None:
         env = {
@@ -1242,8 +1244,7 @@ def compile_latex(
             commands = [
                 [
                     "tectonic",
-                    "-Z",
-                    "shell-escape-disabled",
+                    "--untrusted",
                     "--keep-logs",
                     f"{texfile_name}.tex",
                 ]
@@ -1265,11 +1266,22 @@ def compile_latex(
                         timeout=timeout,
                         env=env,
                     )
-                    # Fallback if older tectonic version does not support -Z shell-escape-disabled
+                    # Older Tectonic releases may not expose --untrusted. The build still
+                    # runs inside our isolated, allowlisted sandbox in that case.
+                    tectonic_error = (result.stderr or "").lower()
                     if (
                         engine == "tectonic"
                         and result.returncode != 0
-                        and "unexpected argument '-Z'" in (result.stderr or "")
+                        and "--untrusted" in tectonic_error
+                        and any(
+                            marker in tectonic_error
+                            for marker in (
+                                "unexpected argument",
+                                "wasn't expected",
+                                "unknown option",
+                                "unrecognized option",
+                            )
+                        )
                     ):
                         result = subprocess.run(
                             ["tectonic", "--keep-logs", f"{texfile_name}.tex"],
@@ -1362,7 +1374,10 @@ def compile_latex(
                     rich.print(f"[dim]{log['stdout'].strip()}[/dim]")
                 if log["stderr"].strip():
                     rich.print(f"[red]{log['stderr'].strip()}[/red]")
-        return False
+        if strict_latex:
+            return False
+        preview_reason = f"{engine} compilation failed"
+        engine = None
 
     if strict_latex:
         rich.print(
@@ -1375,10 +1390,16 @@ def compile_latex(
         return False
 
     preview_target = preview_pdf_file or pdf_file
-    print(
-        f"⚠️ Warning: No TeX engine (XeLaTeX/LuaLaTeX/Tectonic/pdfLaTeX) found. "
-        f"LaTeX syntax validated; rendering non-typeset preview PDF at '{preview_target}'."
-    )
+    if preview_reason:
+        print(
+            f"⚠️ Warning: {preview_reason}; LaTeX syntax validated and non-strict mode is active. "
+            f"Rendering non-typeset preview PDF at '{preview_target}'."
+        )
+    else:
+        print(
+            f"⚠️ Warning: No TeX engine (XeLaTeX/LuaLaTeX/Tectonic/pdfLaTeX) found. "
+            f"LaTeX syntax validated; rendering non-typeset preview PDF at '{preview_target}'."
+        )
 
     # Fallback preview rendering (ONLY when no TeX engine is installed, strict_latex=False,
     # AND validate_latex_syntax passed)

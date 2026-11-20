@@ -14,6 +14,7 @@ These guidelines structure project-based, hands-on engineering books where reade
 4. **Hands-On Lab (`exercisesbox`):** End every chapter with a concise summary and 2–3 practical engineering extensions or failure-injection exercises.
 
 ## 3. Grounding, Visuals & Typesetting
+* **Reading Rhythm:** Preserve the template's `\setstretch{1.12}`, `\parskip`, and `\parindent` settings so body prose has comfortable vertical spacing. Do not compress body text to single spacing to reduce page count.
 * **Grounded Data:** Use only metrics and measurements present in `technical_notes.md` / `experimental_log.md`.
 * **Figures:** Store under `figures/` and reference as `figures/<filename>`. Never put `"Figure X:"` inside `\caption{...}`.
 * **Code Width:** Wrap lines cleanly (`breaklines=true`, <= 88 chars/line) inside `lstlisting`.

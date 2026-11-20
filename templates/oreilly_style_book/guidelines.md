@@ -23,6 +23,7 @@ Every main chapter should follow a clear progressive-disclosure flow:
 * **Grounded Benchmarks:** Every quantitative table and performance plot must trace directly to `technical_notes.md` (or `experimental_log.md`). Never fabricate latency, throughput, or cost numbers.
 
 ## 4. Visuals, Tables, and Typesetting
+* **Reading Rhythm:** Preserve the template's `\setstretch{1.12}`, `\parskip`, and `\parindent` settings so body prose has comfortable vertical spacing. Do not compress body text to single spacing to reduce page count.
 * **Figures:** Store all figures in `figures/` and reference with the `figures/` prefix (`\includegraphics[width=0.9\linewidth]{figures/...}`). Keep captions informative and free of `"Figure X:"` prefixes.
 * **Tables:** Use `\toprule`, `\midrule`, `\bottomrule` from `booktabs` and `\small` or `tabularx` for multi-column comparisons. Place tables near their first `\cref{tab:...}` reference.
 * **Cross-References:** Use `\cref{ch:...}`, `\cref{sec:...}`, `\cref{fig:...}`, `\cref{tab:...}`, `\cref{lst:...}` consistently.

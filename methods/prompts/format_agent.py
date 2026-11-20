@@ -50,6 +50,10 @@ YOUR GOAL:
 - Fix orphaned headings at page bottoms with `\clearpage` or clean vertical breaks only where needed.
 - DO NOT change `\usepackage[capitalize]{cleveref}` into `cleverref`.
 
+#### 5. Body Reading Rhythm
+- Preserve the template's global `\setstretch`, `\parskip`, and `\parindent` settings. Never tighten body prose to single spacing merely to reduce page count.
+- Do not add manual `\\` line breaks between ordinary sentences; let paragraphs wrap naturally using the template's reading rhythm.
+
 ### OUTPUT FORMAT (STRICT)
 Return your response in two distinct code blocks in this exact order:
 

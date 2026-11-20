@@ -208,6 +208,33 @@ def _read_text(path: str) -> str:
         return f.read()
 
 
+def _ensure_body_reading_rhythm(latex_text: str) -> str:
+    """Restore readable body spacing if an author/editor agent drops template settings."""
+    if not latex_text or r"\begin{document}" not in latex_text:
+        return latex_text
+
+    additions = []
+    if r"\usepackage{setspace}" not in latex_text:
+        additions.append(r"\usepackage{setspace}")
+    if not re.search(r"\\(?:setstretch|linespread)\s*\{", latex_text):
+        additions.append(r"\setstretch{1.12}")
+    if not re.search(r"\\setlength\s*\{\\parskip\}", latex_text):
+        additions.append(r"\setlength{\parskip}{0.2\baselineskip}")
+    if not re.search(r"\\setlength\s*\{\\parindent\}", latex_text):
+        additions.append(r"\setlength{\parindent}{1em}")
+    if not additions:
+        return latex_text
+
+    rhythm_block = (
+        "% Comfortable body rhythm for Korean and English technical prose.\n"
+        + "\n".join(additions)
+        + "\n"
+    )
+    return latex_text.replace(
+        r"\begin{document}", rhythm_block + r"\begin{document}", 1
+    )
+
+
 def _resolve_file(folder: str, primary: str, fallbacks: list[str]) -> str:
     for name in [primary] + [fb for fb in fallbacks if fb != primary]:
         candidate = os.path.join(folder, name)
@@ -882,6 +909,7 @@ async def run_book_orchestra_workflow(
         model=model_tier,
     )
     updated_template_tex = parse_agent_latex_response(str(lit_latex_raw))
+    updated_template_tex = _ensure_body_reading_rhythm(updated_template_tex)
     updated_template_tex, _ = audit_and_clean_citations(
         updated_template_tex, set(citation_map.keys())
     )
@@ -1238,6 +1266,7 @@ async def run_book_orchestra_workflow(
         model=model_tier,
     )
     current_tex = parse_agent_latex_response(str(draft_latex_raw))
+    current_tex = _ensure_body_reading_rhythm(current_tex)
     current_tex, _ = audit_and_clean_citations(
         current_tex, set(citation_map.keys())
     )
@@ -1394,6 +1423,7 @@ async def run_book_orchestra_workflow(
         new_tex = parse_agent_latex_response(str(rev_res.get("latex", "")))
         if not new_tex:
             break
+        new_tex = _ensure_body_reading_rhythm(new_tex)
         new_tex, _ = audit_and_clean_citations(new_tex, set(citation_map.keys()))
 
         cur_name = f"refined_book_{v_label}"
@@ -1526,6 +1556,7 @@ async def run_book_orchestra_workflow(
             model=reflection_model_tier,
         )
         polished_tex = parse_agent_latex_response(str(fmt_raw)) or current_tex
+    polished_tex = _ensure_body_reading_rhythm(polished_tex)
     polished_tex, _ = audit_and_clean_citations(
         polished_tex, set(citation_map.keys())
     )

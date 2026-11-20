@@ -125,8 +125,26 @@ class TestBookTemplatesAndExamples(unittest.TestCase):
                 tex = f.read()
             self.assertIn(r"\documentclass", tex)
             self.assertIn(r"\chapter", tex)
+            self.assertIn(r"\usepackage{setspace}", tex)
+            self.assertIn(r"\setstretch{1.12}", tex)
+            self.assertIn(r"\setlength{\parskip}{0.2\baselineskip}", tex)
             for env in required_envs:
                 self.assertIn(env, tex, f"{env} missing in {tpl}")
+
+    def test_body_reading_rhythm_is_restored_deterministically(self):
+        from methods.agy_workflow_runner import _ensure_body_reading_rhythm
+
+        compact_tex = r"\documentclass{book}\begin{document}Body\end{document}"
+        spaced_tex = _ensure_body_reading_rhythm(compact_tex)
+        self.assertIn(r"\usepackage{setspace}", spaced_tex)
+        self.assertIn(r"\setstretch{1.12}", spaced_tex)
+        self.assertIn(r"\setlength{\parskip}{0.2\baselineskip}", spaced_tex)
+        self.assertIn(r"\setlength{\parindent}{1em}", spaced_tex)
+        self.assertEqual(
+            _ensure_body_reading_rhythm(spaced_tex),
+            spaced_tex,
+            "Typography restoration must be idempotent.",
+        )
 
     def test_example_materials_and_frontend_example(self):
         raw_dir = os.path.join(

@@ -3,6 +3,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 
@@ -269,6 +270,162 @@ async def fetch():
         self.assertEqual(args.proposal_filename, "book_proposal.md")
         self.assertEqual(args.technical_notes_filename, "technical_notes.md")
         self.assertEqual(args.target_audience, "Staff Engineers")
+
+        slide_args = parser.parse_args(["--slides_file", "lecture.pptx"])
+        self.assertEqual(slide_args.slides_file, "lecture.pptx")
+        self.assertIsNone(slide_args.raw_materials_dir)
+
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "--slides_file",
+                    "lecture.pptx",
+                    "--raw_materials_dir",
+                    "raw_materials",
+                ]
+            )
+
+    def test_pptx_slide_ingestion_preserves_grounding_notes_and_visuals(self):
+        import base64
+
+        from utils.diagram_plot_utils import _minimal_png_base64
+        from utils.slide_ingestion import prepare_slide_materials
+
+        slide_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld><p:spTree>
+    <p:sp><p:nvSpPr><p:cNvPr id="1" name="Title"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+      <p:txBody><a:p><a:r><a:t>Async Foundations</a:t></a:r></a:p></p:txBody></p:sp>
+    <p:sp><p:nvSpPr><p:cNvPr id="2" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+      <p:txBody><a:p><a:r><a:t>Tasks are scheduled cooperatively</a:t></a:r></a:p></p:txBody></p:sp>
+    <p:pic><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic>
+  </p:spTree></p:cSld>
+</p:sld>"""
+        rels_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+</Relationships>"""
+        notes_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+         xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp>
+    <p:nvSpPr><p:cNvPr id="1" name="Notes"/><p:cNvSpPr/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>
+    <p:txBody><a:p><a:r><a:t>Compare a task switch with an OS thread switch.</a:t></a:r></a:p></p:txBody>
+  </p:sp></p:spTree></p:cSld>
+</p:notes>"""
+        orientation_slide_xml = slide_xml.replace(
+            "Async Foundations", "Course Orientation"
+        ).replace(
+            "Tasks are scheduled cooperatively", "How to use this course"
+        ).replace(
+            '<p:pic><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic>',
+            "",
+        )
+        presentation_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId1"/></p:sldIdLst>
+</p:presentation>"""
+        presentation_rels_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+</Relationships>"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            deck_path = os.path.join(tmpdir, "lecture.pptx")
+            materials_dir = os.path.join(tmpdir, "generated", "raw_materials")
+            with zipfile.ZipFile(deck_path, "w", zipfile.ZIP_DEFLATED) as package:
+                package.writestr("ppt/slides/slide1.xml", slide_xml)
+                package.writestr("ppt/slides/slide2.xml", orientation_slide_xml)
+                package.writestr("ppt/slides/_rels/slide1.xml.rels", rels_xml)
+                package.writestr("ppt/presentation.xml", presentation_xml)
+                package.writestr(
+                    "ppt/_rels/presentation.xml.rels", presentation_rels_xml
+                )
+                package.writestr("ppt/notesSlides/notesSlide1.xml", notes_xml)
+                package.writestr(
+                    "ppt/media/image1.png",
+                    base64.b64decode(_minimal_png_base64()),
+                )
+
+            result = prepare_slide_materials(
+                deck_path,
+                materials_dir,
+                target_audience="Developers new to async programming",
+                author_voice="Patient and conversational",
+            )
+
+            self.assertEqual(result["slide_count"], 2)
+            self.assertEqual(result["extracted_figure_count"], 1)
+            with open(result["manifest_path"], "r", encoding="utf-8") as stream:
+                manifest = json.load(stream)
+            self.assertEqual(manifest["slides"][0]["title"], "Course Orientation")
+            self.assertEqual(manifest["slides"][1]["title"], "Async Foundations")
+            self.assertEqual(
+                manifest["slides"][1]["speaker_notes"],
+                "Compare a task switch with an OS thread switch.",
+            )
+            self.assertEqual(len(manifest["source_sha256"]), 64)
+            self.assertTrue(
+                os.path.exists(
+                    os.path.join(materials_dir, manifest["preserved_source"])
+                )
+            )
+            with open(result["proposal_path"], "r", encoding="utf-8") as stream:
+                proposal = stream.read()
+            self.assertIn("do not write a slide-by-slide transcript", proposal)
+            self.assertIn("concrete analogies", proposal)
+            with open(result["technical_notes_path"], "r", encoding="utf-8") as stream:
+                notes = stream.read()
+            self.assertIn("Tasks are scheduled cooperatively", notes)
+            self.assertIn("Compare a task switch", notes)
+            self.assertIn("figures/slide_002_visual_01.png", notes)
+
+            with open(
+                os.path.join(materials_dir, "figures", "info.json"),
+                "r",
+                encoding="utf-8",
+            ) as stream:
+                figure_info = json.load(stream)
+            self.assertEqual(figure_info[0]["source_slide"], 2)
+            self.assertEqual(figure_info[0]["generated_by"], "slide_ingestion")
+
+    def test_pdf_slide_ingestion_extracts_page_text_and_large_visual(self):
+        import base64
+        import fitz
+
+        from utils.diagram_plot_utils import _minimal_png_base64
+        from utils.slide_ingestion import prepare_slide_materials
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            deck_path = os.path.join(tmpdir, "lecture.pdf")
+            document = fitz.open()
+            page = document.new_page(width=800, height=450)
+            page.insert_text((60, 60), "Event Loop Mental Model", fontsize=24)
+            page.insert_text((60, 95), "One thread can coordinate many waiting tasks.")
+            page.insert_image(
+                fitz.Rect(60, 130, 500, 390),
+                stream=base64.b64decode(_minimal_png_base64()),
+            )
+            document.save(deck_path)
+            document.close()
+
+            result = prepare_slide_materials(
+                deck_path, os.path.join(tmpdir, "generated", "raw_materials")
+            )
+            self.assertEqual(result["slide_count"], 1)
+            self.assertEqual(result["extracted_figure_count"], 1)
+            with open(result["manifest_path"], "r", encoding="utf-8") as stream:
+                manifest = json.load(stream)
+            self.assertEqual(manifest["source_type"], "pdf")
+            self.assertIn(
+                "Event Loop Mental Model", manifest["slides"][0]["visible_text"]
+            )
+            self.assertTrue(manifest["slides"][0]["figures"])
 
 
 class TestEndToEndMockedBookPipeline(unittest.TestCase):

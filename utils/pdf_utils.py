@@ -142,6 +142,11 @@ def _extract_pdf_text_raw_bytes(pdf_path: str) -> str:
         return ""
 
 
+def _normalize_extracted_pdf_text(text: str) -> str:
+    """Normalize layout-only spacing characters emitted by PDF text backends."""
+    return text.replace("\u00a0", " ")
+
+
 def load_book(pdf_path, num_pages=None, min_size=100):
     """Extracts text from a PDF file using available PDF backends."""
     text = ""
@@ -153,7 +158,7 @@ def load_book(pdf_path, num_pages=None, min_size=100):
             for page in doc:
                 text += page.get_text()
             if len(text) >= min_size:
-                return text
+                return _normalize_extracted_pdf_text(text)
         except Exception as e:
             print(f"Error with pymupdf, trying next backend: {e}")
 
@@ -163,13 +168,13 @@ def load_book(pdf_path, num_pages=None, min_size=100):
             pages = reader.pages if num_pages is None else reader.pages[:num_pages]
             text = "".join((page.extract_text() or "") for page in pages)
             if len(text) >= min_size:
-                return text
+                return _normalize_extracted_pdf_text(text)
         except Exception as e:
             print(f"Error with pypdf, trying next backend: {e}")
 
     text = _extract_pdf_text_pdfminer(pdf_path)
     if len(text) >= min_size:
-        return text
+        return _normalize_extracted_pdf_text(text)
 
     if shutil.which("pdftotext"):
         try:
@@ -180,13 +185,13 @@ def load_book(pdf_path, num_pages=None, min_size=100):
                 timeout=20,
             )
             if proc.returncode == 0 and len(proc.stdout) >= min_size:
-                return proc.stdout
+                return _normalize_extracted_pdf_text(proc.stdout)
         except Exception:
             pass
 
     raw_text = _extract_pdf_text_raw_bytes(pdf_path)
     if len(raw_text) >= min_size:
-        return raw_text
+        return _normalize_extracted_pdf_text(raw_text)
 
     if len(text) > 0:
         return text

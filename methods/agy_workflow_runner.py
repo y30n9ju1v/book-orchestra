@@ -208,6 +208,40 @@ def _read_text(path: str) -> str:
         return f.read()
 
 
+def _load_slide_source_context(raw_materials_dir: str) -> tuple[dict, str]:
+    """Load compact provenance without duplicating all extracted slide text in prompts."""
+    manifest_path = os.path.join(raw_materials_dir, "slide_source_manifest.json")
+    if not os.path.isfile(manifest_path):
+        return {}, ""
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+    except (OSError, json.JSONDecodeError):
+        return {}, ""
+    if not isinstance(manifest, dict):
+        return {}, ""
+    outline_lines = []
+    for slide in manifest.get("slides", []):
+        if not isinstance(slide, dict):
+            continue
+        locator = slide.get("source_locator") or f"slide {slide.get('slide_number', '?')}"
+        title = slide.get("title") or "Untitled"
+        figures = slide.get("figures") or []
+        outline_lines.append(
+            f"- {locator}: {title} (extracted visuals: {len(figures) if isinstance(figures, list) else 0})"
+        )
+    context = (
+        "Source-deck provenance:\n"
+        f"- Original file: {manifest.get('source_file', 'unknown')}\n"
+        f"- Type: {manifest.get('source_type', 'unknown')}\n"
+        f"- SHA-256: {manifest.get('source_sha256', 'unknown')}\n"
+        f"- Slide/page count: {manifest.get('slide_count', len(outline_lines))}\n"
+        "- Traceable sequence:\n"
+        + "\n".join(outline_lines)
+    )
+    return manifest, context
+
+
 def _ensure_body_reading_rhythm(latex_text: str) -> str:
     """Restore readable body spacing if an author/editor agent drops template settings."""
     if not latex_text or r"\begin{document}" not in latex_text:
@@ -577,6 +611,7 @@ async def run_book_orchestra_workflow(
     raw_materials_rel = workflow_args.get(
         "raw_materials_dir", "examples/distributed_llm_systems_book/raw_materials"
     )
+    slides_rel = workflow_args.get("slides_file")
     template_rel = workflow_args.get(
         "latex_template_dir", "templates/oreilly_style_book"
     )
@@ -618,11 +653,6 @@ async def run_book_orchestra_workflow(
         0, int(workflow_args.get("plotting_max_critic_rounds", 3))
     )
 
-    raw_materials_dir = (
-        raw_materials_rel
-        if os.path.isabs(raw_materials_rel)
-        else os.path.join(_WORK_ROOT, raw_materials_rel)
-    )
     latex_template_dir = (
         template_rel
         if os.path.isabs(template_rel)
@@ -633,6 +663,33 @@ async def run_book_orchestra_workflow(
         if os.path.isabs(output_rel)
         else os.path.join(_WORK_ROOT, output_rel)
     )
+    if slides_rel:
+        slides_path = (
+            slides_rel
+            if os.path.isabs(slides_rel)
+            else os.path.join(_WORK_ROOT, slides_rel)
+        )
+        from utils.slide_ingestion import prepare_slide_materials
+
+        slide_result = prepare_slide_materials(
+            slides_path,
+            os.path.join(base_dir_arg, "raw_materials"),
+            target_audience=target_audience,
+            book_style=book_style,
+            author_voice=author_voice,
+        )
+        raw_materials_dir = slide_result["raw_materials_dir"]
+        log_fn(
+            "Prepared slide-grounded source materials: "
+            f"{slide_result['slide_count']} slides/pages and "
+            f"{slide_result['extracted_figure_count']} reusable visuals."
+        )
+    else:
+        raw_materials_dir = (
+            raw_materials_rel
+            if os.path.isabs(raw_materials_rel)
+            else os.path.join(_WORK_ROOT, raw_materials_rel)
+        )
 
     (
         _,
@@ -671,6 +728,9 @@ async def run_book_orchestra_workflow(
 
     proposal_text = _read_text(proposal_path)
     notes_text = _read_text(notes_path)
+    slide_source_manifest, slide_source_context = _load_slide_source_context(
+        target_raw_dir
+    )
     template_text = _read_text(template_path)
     guidelines_text = _read_text(guidelines_path)
 
@@ -685,6 +745,11 @@ async def run_book_orchestra_workflow(
         + f"\n\nPublishing Profile:\n- Target Audience: {target_audience}\n- Book Style: {book_style}\n- Author Voice Contract: {author_voice}\n- Visual Density: {visual_density}\n\n"
         + f"--- 'book_proposal.md' ---\n{proposal_text}\n\n"
         + f"--- 'technical_notes.md' ---\n{notes_text}\n\n"
+        + (
+            f"--- 'slide_source_manifest.json' (provenance summary) ---\n{slide_source_context}\n\n"
+            if slide_source_context
+            else ""
+        )
         + f"--- 'template.tex' ---\n{template_text}\n\n"
         + f"--- 'guidelines.md' ---\n{guidelines_text}\n"
     )
@@ -1253,7 +1318,12 @@ async def run_book_orchestra_workflow(
         f"--- INPUT: citation_map.json ---\n{citation_context}\n\n"
         f"--- INPUT: book_proposal.md ---\n{proposal_text}\n\n"
         f"--- INPUT: technical_notes.md ---\n{notes_text}\n\n"
-        f"--- INPUT: figures_list ---\n{figures_context}\n\n"
+        + (
+            f"--- INPUT: slide source provenance ---\n{slide_source_context}\n\n"
+            if slide_source_context
+            else ""
+        )
+        + f"--- INPUT: figures_list ---\n{figures_context}\n\n"
         f"--- INPUT: guidelines.md ---\n{guidelines_text}\n\n"
         f"--- INPUT: template.tex ---\n{updated_template_tex}\n\n"
         f"Return the FULL completed LaTeX manuscript wrapped in ```latex ... ```."
@@ -1683,6 +1753,17 @@ async def run_book_orchestra_workflow(
                 "visual_density": visual_density,
                 "ready_figure_count": len(figures_info),
                 "user_figure_count": len(user_figures_info),
+                "slide_source": (
+                    {
+                        "source_file": slide_source_manifest.get("source_file"),
+                        "source_type": slide_source_manifest.get("source_type"),
+                        "source_sha256": slide_source_manifest.get("source_sha256"),
+                        "slide_count": slide_source_manifest.get("slide_count"),
+                        "manifest": "raw_materials/slide_source_manifest.json",
+                    }
+                    if slide_source_manifest
+                    else None
+                ),
             }
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=4, ensure_ascii=False)

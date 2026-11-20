@@ -15,7 +15,6 @@
 import argparse
 import sys
 import os
-import shutil
 from datetime import datetime
 
 
@@ -25,10 +24,14 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
         or "CLI for generating a technical IT/engineering book using BookOrchestra."
     )
 
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--raw_materials_dir",
-        required=True,
         help="Directory containing raw book materials (book_proposal.md / idea_sparse.md and technical_notes.md / experimental_log.md).",
+    )
+    source_group.add_argument(
+        "--slides_file",
+        help="Lecture slides to turn into a friendly explanatory book (.pptx or slide .pdf).",
     )
     parser.add_argument(
         "--output_dir",
@@ -147,10 +150,13 @@ def main(argv=None):
     ):
         args.research_cutoff = datetime.now().strftime("%Y-%m")
 
-    if not os.path.exists(args.raw_materials_dir):
+    if args.raw_materials_dir and not os.path.exists(args.raw_materials_dir):
         print(
             f"Error: Raw materials directory '{args.raw_materials_dir}' does not exist."
         )
+        sys.exit(1)
+    if args.slides_file and not os.path.isfile(args.slides_file):
+        print(f"Error: Slides file '{args.slides_file}' does not exist.")
         sys.exit(1)
 
     if args.output_dir:
@@ -161,6 +167,28 @@ def main(argv=None):
 
     from utils.path_security import prepare_safe_output_workspace
 
+    raw_materials_dir = args.raw_materials_dir
+    if args.slides_file:
+        from utils.slide_ingestion import prepare_slide_materials
+
+        try:
+            slide_result = prepare_slide_materials(
+                args.slides_file,
+                os.path.join(base_dir, "raw_materials"),
+                target_audience=args.target_audience,
+                book_style=args.book_style,
+                author_voice=args.author_voice,
+            )
+            raw_materials_dir = slide_result["raw_materials_dir"]
+            print(
+                "📚 Prepared slide-grounded source materials "
+                f"({slide_result['slide_count']} slides, "
+                f"{slide_result['extracted_figure_count']} reusable visuals)."
+            )
+        except (OSError, RuntimeError, ValueError) as err:
+            print(f"❌ Could not ingest lecture slides: {err}", file=sys.stderr)
+            sys.exit(1)
+
     try:
         (
             _,
@@ -169,7 +197,7 @@ def main(argv=None):
             _,
             _,
         ) = prepare_safe_output_workspace(
-            raw_materials_dir=args.raw_materials_dir,
+            raw_materials_dir=raw_materials_dir,
             latex_template_dir=args.latex_template_dir,
             output_dir=base_dir,
         )
@@ -191,7 +219,7 @@ def main(argv=None):
         "Cwd": repo_root,
         "Description": "Run BookOrchestra multi-agent technical book publishing pipeline",
         "Args": {
-            "raw_materials_dir": args.raw_materials_dir,
+            "raw_materials_dir": raw_materials_dir,
             "latex_template_dir": args.latex_template_dir,
             "output_dir": base_dir,
             "proposal_filename": args.proposal_filename,
@@ -239,7 +267,7 @@ def main(argv=None):
 
     if not args.use_plotting:
         has_figures = False
-        figures_dir = os.path.join(args.raw_materials_dir, "figures")
+        figures_dir = os.path.join(raw_materials_dir, "figures")
         if os.path.exists(figures_dir):
             for f in os.listdir(figures_dir):
                 if f.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
@@ -277,7 +305,7 @@ def main(argv=None):
 
     if args.strict_latex and not result.get("is_publication_grade", False):
         print(
-            f"❌ Strict LaTeX publish mode failed: only preview PDF was produced.",
+            "❌ Strict LaTeX publish mode failed: only preview PDF was produced.",
             file=sys.stderr,
         )
         sys.exit(1)

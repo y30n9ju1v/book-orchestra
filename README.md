@@ -64,6 +64,29 @@ python3 book_writing_cli.py \
   --emit_workflow_only
 ```
 
+### 3. Turn Lecture Slides into a Friendly Explanatory Book
+
+PPTX와 슬라이드 PDF를 바로 입력할 수 있습니다. PPTX에서는 보이는 텍스트, 발표자 노트,
+표, 차트의 캐시 값과 재사용 가능한 이미지를 추출합니다. PDF에서는 페이지 텍스트와 의미
+있는 크기의 래스터 이미지를 추출합니다. 원본 파일과 SHA-256, 슬라이드별 출처 위치는
+`raw_materials/source_slides/`와 `raw_materials/slide_source_manifest.json`에 보존됩니다.
+
+```bash
+python3 book_writing_cli.py \
+  --slides_file ./lecture/async-programming.pptx \
+  --latex_template_dir templates/oreilly_style_book \
+  --output_dir ./book_output_async_course \
+  --target_audience "처음 비동기 프로그래밍을 배우는 개발자" \
+  --book_style "친절한 개념 설명과 작은 예제가 풍부한 강의형 교재" \
+  --author_voice "독자 옆에서 차근차근 설명하는 따뜻하고 정확한 멘토" \
+  --visual_density high
+```
+
+`--slides_file`과 `--raw_materials_dir`은 둘 중 하나만 사용합니다. 변환기는 슬라이드 한 장을
+책의 한 절로 기계적으로 옮기지 않고, 인접한 슬라이드를 주제별 장으로 묶도록 집필 에이전트에
+지시합니다. 불릿 사이의 전제와 인과관계는 풀어 쓰되, 원본에 없는 수치·주장·발표자 의도는
+만들지 않습니다.
+
 ---
 
 ## Generated Outputs
@@ -75,6 +98,7 @@ Inside `output_dir`:
 - `final_book.md`: Clean Markdown book manuscript for Markdown/Pandoc/EPUB workflows
 - `latex_writeup/chapters/ch01_*.tex`, `ch02_*.tex`, ...: Modular chapter-by-chapter LaTeX files
 - `book_continuity_ledger.json`: Tracked glossary terms, chapter titles, code listings, and cross-reference labels
+- `raw_materials/slide_source_manifest.json`: Slide/page-level provenance, original source hash, notes, and extracted-visual map when `--slides_file` is used
 - `outline.json`: Complete Book Blueprint & TOC
 - `literature_agent_output/citation_map.json` & `references.bib`: Verified references
 - `content_refinement_workdir/peer_reviews/`: 3-Persona Editorial Review Board evaluations

@@ -20,7 +20,6 @@ import time
 import threading
 import subprocess
 import shutil
-import tempfile
 import datetime
 import io
 import zipfile
@@ -94,6 +93,8 @@ def initialize_session_state():
         "figures": [],
         "figure_counter": 0,
         "generated_figures": [],
+        "slide_source_bytes": None,
+        "slide_source_name": None,
         "run_directory": None,
         "email_confirmed": False,
         "error_message": "",
@@ -397,8 +398,10 @@ def handle_live_execution(
 ):
     if st.session_state.running:
         if not st.session_state.get("thread_started"):
-            if not st.session_state.get("saved_idea") or not st.session_state.get(
-                "saved_log"
+            has_slide_source = bool(st.session_state.get("saved_slide_bytes"))
+            if not has_slide_source and (
+                not st.session_state.get("saved_idea")
+                or not st.session_state.get("saved_log")
             ):
                 st.session_state.error_message = "❌ Please provide both the Book Proposal and Technical Notes."
                 st.session_state.running = False
@@ -418,15 +421,25 @@ def handle_live_execution(
             figures_directory = os.path.join(raw_materials_directory, "figures")
 
             os.makedirs(run_directory, exist_ok=True)
-            os.makedirs(raw_materials_directory, exist_ok=True)
-            os.makedirs(figures_directory, exist_ok=True)
+            if not has_slide_source:
+                os.makedirs(raw_materials_directory, exist_ok=True)
+                os.makedirs(figures_directory, exist_ok=True)
+
+            slide_source_path = None
+            if has_slide_source:
+                slide_extension = os.path.splitext(
+                    st.session_state.get("saved_slide_name") or "lecture.pptx"
+                )[1].lower()
+                if slide_extension not in (".pptx", ".pdf"):
+                    slide_extension = ".pptx"
+                slide_source_path = os.path.join(
+                    run_directory, f"uploaded_lecture{slide_extension}"
+                )
 
             command = [
                 sys.executable,
                 "-u",
                 os.path.join(base_directory, "book_writing_cli.py"),
-                "--raw_materials_dir",
-                raw_materials_directory,
                 "--output_dir",
                 run_directory,
                 "--latex_template_dir",
@@ -448,6 +461,10 @@ def handle_live_execution(
                 "--visual_density",
                 selected_visual_density,
             ]
+            if slide_source_path:
+                command.extend(["--slides_file", slide_source_path])
+            else:
+                command.extend(["--raw_materials_dir", raw_materials_directory])
             if enable_plotting == "Yes":
                 command.extend(
                     [
@@ -472,6 +489,8 @@ def handle_live_execution(
                 idea_content,
                 log_content,
                 figures_list,
+                slide_bytes,
+                slide_path,
             ):
                 try:
                     preexec_fn = None
@@ -487,22 +506,26 @@ def handle_live_execution(
                     os.makedirs(run_directory, exist_ok=True)
                     raw_materials_dir = os.path.join(run_directory, "raw_materials")
                     figures_dir = os.path.join(raw_materials_dir, "figures")
-                    os.makedirs(raw_materials_dir, exist_ok=True)
-                    os.makedirs(figures_dir, exist_ok=True)
 
-                    with open(
-                        os.path.join(raw_materials_dir, "book_proposal.md"),
-                        "w",
-                        encoding="utf-8",
-                    ) as file_object:
-                        file_object.write(idea_content)
+                    if slide_bytes and slide_path:
+                        with open(slide_path, "wb") as file_object:
+                            file_object.write(slide_bytes)
+                    else:
+                        os.makedirs(raw_materials_dir, exist_ok=True)
+                        os.makedirs(figures_dir, exist_ok=True)
+                        with open(
+                            os.path.join(raw_materials_dir, "book_proposal.md"),
+                            "w",
+                            encoding="utf-8",
+                        ) as file_object:
+                            file_object.write(idea_content)
 
-                    with open(
-                        os.path.join(raw_materials_dir, "technical_notes.md"),
-                        "w",
-                        encoding="utf-8",
-                    ) as file_object:
-                        file_object.write(log_content)
+                        with open(
+                            os.path.join(raw_materials_dir, "technical_notes.md"),
+                            "w",
+                            encoding="utf-8",
+                        ) as file_object:
+                            file_object.write(log_content)
 
                     from utils.path_security import (
                         detect_media_format,
@@ -510,7 +533,7 @@ def handle_live_execution(
                         sanitize_upload_filename,
                     )
 
-                    for figure in figures_list:
+                    for figure in figures_list if not slide_bytes else []:
                         if isinstance(figure["file"], str):
                             with open(figure["file"], "rb") as src_f:
                                 raw_fig_bytes = src_f.read()
@@ -641,6 +664,8 @@ def handle_live_execution(
                     st.session_state.saved_idea,
                     st.session_state.saved_log,
                     list(st.session_state.figures),
+                    st.session_state.get("saved_slide_bytes"),
+                    slide_source_path,
                 ),
             )
             add_script_run_ctx(worker_thread)
@@ -675,6 +700,28 @@ if not st.session_state.get("hide_inputs"):
             st.session_state.error_message = ""
 
         st.header("📝 Book Source Materials")
+        st.subheader("🎞️ Lecture Slides (Optional Alternative Input)")
+        st.caption(
+            "Upload a PPTX or slide PDF to extract slide text, speaker notes, tables, "
+            "and reusable visuals. When supplied, it replaces the proposal and notes inputs below."
+        )
+        uploaded_slides = st.file_uploader(
+            "Upload lecture slides",
+            type=["pptx", "pdf"],
+            disabled=st.session_state.locked,
+            key="slide_uploader_main",
+        )
+        if uploaded_slides:
+            st.session_state.slide_source_bytes = uploaded_slides.getvalue()
+            st.session_state.slide_source_name = uploaded_slides.name
+            st.success(
+                "Lecture slides selected. BookOrchestra will preserve the source and "
+                "create grounded proposal/notes automatically."
+            )
+        else:
+            st.session_state.slide_source_bytes = None
+            st.session_state.slide_source_name = None
+
         column_1, column_2 = st.columns(2)
 
         with column_1:
@@ -750,6 +797,11 @@ if not st.session_state.get("hide_inputs"):
                     st.session_state.log_text_main = uploaded_log.read().decode("utf-8")
 
         st.subheader("🖼️ Upload Architecture Diagrams or Plots (Optional)")
+        if st.session_state.get("slide_source_bytes"):
+            st.info(
+                "The slide deck's reusable visuals will be extracted automatically. "
+                "Separate figure uploads are available with Proposal & Notes input."
+            )
         figure_column_1, figure_column_2 = st.columns([1, 2])
         with figure_column_1:
             figure_file = st.file_uploader(
@@ -770,6 +822,7 @@ if not st.session_state.get("hide_inputs"):
                 if st.button(
                     "Add Figure",
                     disabled=st.session_state.locked
+                    or bool(st.session_state.get("slide_source_bytes"))
                     or not figure_file
                     or not figure_caption,
                 ):
@@ -792,6 +845,12 @@ if not st.session_state.get("hide_inputs"):
         ):
             st.session_state.saved_idea = st.session_state.get("idea_text_main")
             st.session_state.saved_log = st.session_state.get("log_text_main")
+            st.session_state.saved_slide_bytes = st.session_state.get(
+                "slide_source_bytes"
+            )
+            st.session_state.saved_slide_name = st.session_state.get(
+                "slide_source_name"
+            )
             st.session_state.locked = True
             st.session_state.running = True
             st.session_state.hide_inputs = True

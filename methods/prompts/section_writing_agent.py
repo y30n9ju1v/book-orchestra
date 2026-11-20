@@ -67,6 +67,12 @@ CRITICAL AUTHORING & PUBLISHING STANDARDS:
    - Keep paragraphs focused on one idea. Break up dense stretches with examples, diagrams, or brief reflection. Technical depth must come from precise mechanisms and examples, not from stacking terminology or citations.
    - Do not turn every section into an outage post-mortem, checklist, or catalog of failure modes. Vary pacing and let conceptual discovery, worked examples, and narrative breath coexist with production guidance.
 
+7. **When the Source Is a Lecture Deck**
+   - Treat slide/page locators as provenance, not as the book's visible structure. Group adjacent slides into coherent chapters instead of creating one section per slide.
+   - Do not merely turn each bullet into a longer bullet. Recover the missing connective explanation: prerequisites, definitions, causal steps, a small example, and why the idea matters.
+   - Preserve the source sequence and claims. Use speaker notes as lecturer context, never as evidence for a stronger claim than the notes support.
+   - Mention slide numbers in the prose only when the reader truly needs the source reference; keep traceability in planning and review rather than filling the book with presentation narration.
+
 OUTPUT FORMAT:
 - Return the **FULL** compilable LaTeX manuscript wrapped strictly inside ```latex ... ```.
 - Ensure every `\begin{...}` matches its `\end{...}` and DO NOT change `\usepackage[capitalize]{cleveref}` to `cleverref`.

@@ -7,8 +7,13 @@
     "properties": {
       "raw_materials_dir": {
         "type": "string",
-        "description": "Directory containing book_proposal.md (or idea_sparse.md) and technical_notes.md (or experimental_log.md).",
+        "description": "Directory containing book_proposal.md (or idea_sparse.md) and technical_notes.md (or experimental_log.md). Ignored when slides_file is supplied.",
         "default": "examples/distributed_llm_systems_book/raw_materials"
+      },
+      "slides_file": {
+        "type": ["string", "null"],
+        "description": "Optional lecture deck (.pptx or slide .pdf) to convert into grounded book materials before authoring.",
+        "default": null
       },
       "latex_template_dir": {
         "type": "string",

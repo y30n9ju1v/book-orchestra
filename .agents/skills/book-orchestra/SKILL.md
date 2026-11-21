@@ -36,6 +36,14 @@ Call the `run_workflow` tool with `ScriptPath` pointing to `workflows/book_orche
 
 For lecture material, pass `"slides_file": "path/to/lecture.pptx"` (or a slide PDF) instead of preparing Markdown manually. BookOrchestra extracts visible text, speaker notes, tables/chart caches, and reusable images into managed raw materials, preserves the original deck and a SHA-256 source manifest, and applies a friendly explanatory-book contract.
 
+## Recommended Model & Agent Tier Routing
+- **Coordinator / Parent Chat**: **Gemini 4 Neon** (Medium effort) — best suited for deep analysis, complex coding, and multi-agent workflow orchestration.
+- **Role-based tiers (`Args` defaults)**:
+  - `writer_model_name: "inherit"` (Blueprint, Preface/Ch1, Full Book Authoring — runs on Gemini 4 Neon)
+  - `reflection_model_name: "pro"` (3-Persona Editorial Review Board, Meta-Review, Revision, Typesetting QA)
+  - `plotting_model_name: "flash"` (Matplotlib chart generation & Visual QA critic loop — fast/efficient Hydrogen/Flash tier)
+  - Parallel Reference Discovery (`type_name="research"`) automatically uses `"flash"` when `writer_model_name` is `"inherit"`.
+
 ## Available Publisher Templates (`templates/`)
 - `templates/oreilly_style_book`: O'Reilly-style hands-on architecture and production engineering guide (`objectivesbox`, `tipbox`, `warningbox`, `pitfallbox`, `notebox`, `architecturebox`, `exercisesbox`, `lstlisting`).
 - `templates/manning_in_action_book`: Manning "In Action" project-driven progressive build template.

@@ -55,6 +55,12 @@ Or invoke `run_workflow` with:
 
   `visual_density`는 `minimal`, `balanced`, `high` 중 하나입니다. 기본값 `high`는 서문·부록을 제외한 각 장에 최소 2개의 학습용 개념도/흐름도를 계획합니다. 정량 그래프는 `technical_notes.md`에 실제 수치가 있을 때만 만들며, 생성에 실패한 자리표시자 이미지는 원고에 포함하지 않습니다. `raw_materials/figures/`에 넣은 PNG/JPEG/PDF는 자동으로 등록되어 집필 에이전트가 활용합니다.
 
+  **권장 모델 및 역할별 자동 티어 분배:**
+  대화창 모델을 **Gemini 4 Neon (Medium)**으로 선택해 두고 워크플로우를 실행하면, 역할별 기본 설정(`writer_model_name="inherit"`, `reflection_model_name="pro"`, `plotting_model_name="flash"`)에 따라 아래와 같이 자동 분배됩니다.
+  - **집필 & 청사진** (`writer_model_name="inherit"`): **Gemini 4 Neon**으로 도서 청사진, 서문/1장, 전체 본문 집필을 수행합니다.
+  - **병렬 리서치 & 플로팅** (`research` / `plotting_model_name="flash"`): 경량 고속 티어로 병렬 참고문헌 탐색과 차트 코드 생성·시각 QA 루프를 빠르게 처리합니다.
+  - **편집위원회 리뷰 & 퇴고·조판 QA** (`reflection_model_name="pro"`): **Pro** 티어로 3인 편집위원회 비평, 퇴고, 최종 조판 QA를 수행합니다.
+
 ### 2. Generate a `run_workflow` Payload from CLI
 ```bash
 python3 book_writing_cli.py \

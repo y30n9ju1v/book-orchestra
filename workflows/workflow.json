@@ -83,18 +83,18 @@
       },
       "writer_model_name": {
         "type": "string",
-        "description": "Antigravity model tier for blueprint, research, and chapter writing agents.",
+        "description": "Antigravity model tier for blueprint and chapter writing agents (recommended: 'inherit' under Gemini 4 Neon for deep analysis & coding).",
         "default": "inherit"
       },
       "reflection_model_name": {
         "type": "string",
-        "description": "Antigravity model tier for the 3-Persona Editorial Review Board and refinement agents.",
-        "default": "inherit"
+        "description": "Antigravity model tier for the 3-Persona Editorial Review Board, refinement, and typesetting QA agents.",
+        "default": "pro"
       },
       "plotting_model_name": {
         "type": "string",
-        "description": "Antigravity model tier for the technical diagram & plotting agent.",
-        "default": "inherit"
+        "description": "Antigravity model tier for the technical diagram & plotting agent (fast/efficient tier recommended for iterative code & critic loops).",
+        "default": "flash"
       },
       "image_model_name": {
         "type": "string",

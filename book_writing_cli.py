@@ -78,12 +78,12 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
     parser.add_argument(
         "--writer_model_name",
         default="inherit",
-        help="Antigravity model tier for blueprint, research, and chapter writing agents ('inherit', 'pro', 'flash', 'flash_lite').",
+        help="Antigravity model tier for blueprint and chapter writing agents ('inherit', 'pro', 'flash', 'flash_lite'; default: 'inherit', best with Gemini 4 Neon).",
     )
     parser.add_argument(
         "--reflection_model_name",
-        default="inherit",
-        help="Antigravity model tier for the 3-Persona Editorial Review Board and refinement agents.",
+        default="pro",
+        help="Antigravity model tier for the 3-Persona Editorial Review Board and refinement agents (default: 'pro').",
     )
     parser.add_argument(
         "--research_cutoff",
@@ -104,8 +104,8 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
     )
     parser.add_argument(
         "--plotting_model_name",
-        default="inherit",
-        help="Antigravity model tier for the technical diagram & plotting agent.",
+        default="flash",
+        help="Antigravity model tier for the technical diagram & plotting agent (default: 'flash').",
     )
     parser.add_argument(
         "--image_model_name",

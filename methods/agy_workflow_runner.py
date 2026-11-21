@@ -655,8 +655,10 @@ async def run_book_orchestra_workflow(
     model_tier = workflow_args.get(
         "writer_model_name", workflow_args.get("model", "inherit")
     )
-    reflection_model_tier = workflow_args.get("reflection_model_name", model_tier)
-    plotting_model_tier = workflow_args.get("plotting_model_name", model_tier)
+    reflection_model_tier = workflow_args.get(
+        "reflection_model_name", "pro" if model_tier == "inherit" else model_tier
+    )
+    plotting_model_tier = workflow_args.get("plotting_model_name", "flash")
     image_model_name = workflow_args.get("image_model_name", "image-generator")
     plotting_max_critic_rounds = max(
         0, int(workflow_args.get("plotting_max_critic_rounds", 3))

@@ -26,6 +26,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
 
 from utils.path_security import (
@@ -50,11 +51,26 @@ _MAX_ZIP_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
 _MAX_XML_BYTES = 16 * 1024 * 1024
 _MAX_EMBEDDED_VISUAL_BYTES = 50 * 1024 * 1024
 _MAX_PDF_PAGES = 1000
+_MAX_PDF_TEXT_CHARS_PER_PAGE = 2 * 1024 * 1024
+_MAX_PDF_ANNOTATION_CHARS_PER_PAGE = 64 * 1024
+_MAX_PDF_TABLE_CHARS_PER_PAGE = 1024 * 1024
+_MAX_PDF_TABLE_CELLS_PER_PAGE = 10_000
+_MAX_PDF_LINKS_PER_PAGE = 100
+_MAX_PDF_LINK_CHARS = 8192
 _MAX_RASTER_DIMENSION = 4096
 _MAX_RASTER_PIXELS = 16 * 1024 * 1024
 _SUPPORTED_SOURCE_EXTENSIONS = {".pptx", ".pdf"}
 _ZIP_READ_TOTAL_ATTR = "_book_orchestra_actual_uncompressed_bytes"
 _ZIP_MEMBER_NAMES_ATTR = "_book_orchestra_member_names"
+_MONOSPACE_FONT_RE = re.compile(
+    r"(?:mono|courier|consolas|menlo|monaco|inconsolata|fira\s*code|jetbrains|"
+    r"source\s*code|hack|d2coding|nanumgothiccoding|fixed|terminal|typewriter|cmtt|lmtt)",
+    re.IGNORECASE,
+)
+_PAGE_NUMBER_MARGIN_RE = re.compile(
+    r"^(?:page\s*)?\d{1,4}(?:\s*(?:/|of)\s*\d{1,4})?$|^-\s*\d{1,4}\s*-$",
+    re.IGNORECASE,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -589,11 +605,393 @@ def _extract_pptx(source_path: Path, figures_dir: Path) -> tuple[list[dict], lis
     return slides, figure_info
 
 
+def _is_monospace_span(span: dict) -> bool:
+    flags = int(span.get("flags", 0) or 0)
+    if flags & 8:  # PyMuPDF TEXT_FONT_MONOSPACED bit
+        return True
+    font_name = str(span.get("font") or "")
+    return bool(_MONOSPACE_FONT_RE.search(font_name))
+
+
+def _extract_pdf_lines(page) -> list[dict]:
+    """Extract positioned text lines with font size and monospace metadata."""
+    try:
+        try:
+            page_dict = page.get_text("dict", sort=True)
+        except TypeError:
+            # Test doubles and older PyMuPDF versions may not expose ``sort``.
+            page_dict = page.get_text("dict")
+    except Exception:
+        page_dict = None
+    if not isinstance(page_dict, dict) or not isinstance(page_dict.get("blocks"), list):
+        try:
+            fallback_text = page.get_text("text", sort=True)
+        except TypeError:
+            fallback_text = page.get_text("text")
+        except Exception:
+            fallback_text = ""
+        if len(fallback_text) > _MAX_PDF_TEXT_CHARS_PER_PAGE:
+            raise ValueError("PDF page text exceeds the extraction safety limit.")
+        fallback_lines = _unique_lines(fallback_text.splitlines())
+        return [
+            {
+                "text": line,
+                "raw_text": line,
+                "bbox": (0.0, float(idx * 20), 0.0, float(idx * 20 + 16)),
+                "font_size": 12.0,
+                "is_monospace": False,
+            }
+            for idx, line in enumerate(fallback_lines)
+        ]
+
+    extracted: list[dict] = []
+    extracted_chars = 0
+    for block in page_dict.get("blocks", []):
+        if block.get("type", 0) != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = [
+                span
+                for span in line.get("spans", [])
+                if str(span.get("text") or "").replace("\u00a0", " ")
+            ]
+            if not spans:
+                continue
+            raw_parts: list[str] = []
+            mono_chars = 0
+            total_chars = 0
+            max_font_size = 0.0
+            for span in spans:
+                span_text = str(span.get("text") or "").replace("\u00a0", " ")
+                raw_parts.append(span_text)
+                stripped_len = len(span_text.strip())
+                if stripped_len:
+                    total_chars += stripped_len
+                    max_font_size = max(max_font_size, float(span.get("size") or 0.0))
+                    if _is_monospace_span(span):
+                        mono_chars += stripped_len
+            raw_joined = "".join(raw_parts).rstrip("\r\n")
+            extracted_chars += len(raw_joined)
+            if extracted_chars > _MAX_PDF_TEXT_CHARS_PER_PAGE:
+                raise ValueError("PDF page text exceeds the extraction safety limit.")
+            cleaned = _clean_text(raw_joined)
+            if not cleaned:
+                continue
+            bbox_raw = line.get("bbox") or (0.0, 0.0, 0.0, 0.0)
+            bbox = (
+                float(bbox_raw[0]),
+                float(bbox_raw[1]),
+                float(bbox_raw[2]),
+                float(bbox_raw[3]),
+            )
+            extracted.append(
+                {
+                    "text": cleaned,
+                    "raw_text": raw_joined,
+                    "bbox": bbox,
+                    "font_size": max_font_size or 12.0,
+                    "is_monospace": total_chars > 0 and (mono_chars / total_chars) >= 0.6,
+                }
+            )
+    return extracted
+
+
+def _is_margin_line(line: dict, page_height: float) -> bool:
+    if page_height <= 0:
+        return False
+    _, y0, _, y1 = line["bbox"]
+    return y1 <= page_height * 0.12 or y0 >= page_height * 0.88
+
+
+def _detect_repeated_margin_texts(
+    pages_lines: list[list[dict]], page_heights: list[float]
+) -> set[str]:
+    """Find recurring slide headers/footers appearing across >=50% of pages."""
+    page_count = len(pages_lines)
+    if page_count < 3:
+        return set()
+    counts: dict[str, int] = {}
+    for lines, height in zip(pages_lines, page_heights):
+        seen_on_page: set[str] = set()
+        for line in lines:
+            if _is_margin_line(line, height):
+                text = line["text"]
+                if text and text not in seen_on_page:
+                    seen_on_page.add(text)
+                    counts[text] = counts.get(text, 0) + 1
+    threshold = max(3, int(page_count * 0.5 + 0.5))
+    return {text for text, count in counts.items() if count >= threshold}
+
+
+def _group_pdf_code_blocks(code_lines: list[dict]) -> list[str]:
+    """Reconstruct indentation for contiguous monospace lines using x0 offsets."""
+    if not code_lines:
+        return []
+    groups: list[list[dict]] = []
+    current: list[dict] = []
+    for line in code_lines:
+        if not current:
+            current = [line]
+            continue
+        prev = current[-1]
+        prev_height = max(prev["bbox"][3] - prev["bbox"][1], prev["font_size"], 8.0)
+        vertical_gap = line["bbox"][1] - prev["bbox"][3]
+        if -prev_height <= vertical_gap <= prev_height * 2.5:
+            current.append(line)
+        else:
+            groups.append(current)
+            current = [line]
+    if current:
+        groups.append(current)
+
+    blocks: list[str] = []
+    for group in groups:
+        min_x0 = min(item["bbox"][0] for item in group)
+        avg_font = sum(item["font_size"] for item in group) / len(group)
+        char_width = max(avg_font * 0.6, 4.0)
+        formatted_lines: list[str] = []
+        for item in group:
+            raw_text = item["raw_text"]
+            leading_raw_spaces = len(raw_text) - len(raw_text.lstrip(" "))
+            if leading_raw_spaces > 0:
+                formatted_lines.append(raw_text.rstrip())
+            else:
+                indent_spaces = int(round(max(item["bbox"][0] - min_x0, 0.0) / char_width))
+                indent_spaces = min(max(indent_spaces, 0), 24)
+                formatted_lines.append((" " * indent_spaces) + raw_text.strip())
+        snippet = "\n".join(formatted_lines).strip("\n")
+        if snippet.strip():
+            blocks.append(snippet)
+    return blocks
+
+
+def _parse_pdf_page_text(
+    lines: list[dict],
+    page_height: float,
+    slide_number: int,
+    repeated_margins: set[str],
+) -> tuple[str, list[str], list[str]]:
+    """Return (title, visible_text_lines, code_blocks) for one PDF slide page."""
+    filtered: list[dict] = []
+    for line in lines:
+        text = line["text"]
+        if _is_margin_line(line, page_height):
+            if text in repeated_margins or _PAGE_NUMBER_MARGIN_RE.match(text):
+                continue
+        filtered.append(line)
+
+    non_code_lines = [line for line in filtered if not line["is_monospace"]]
+    code_lines = [line for line in filtered if line["is_monospace"]]
+
+    title = ""
+    if non_code_lines:
+        upper_candidates = [
+            line
+            for line in non_code_lines
+            if page_height <= 0 or line["bbox"][1] <= page_height * 0.6
+        ]
+        title_pool = upper_candidates or non_code_lines
+        max_size = max(line["font_size"] for line in title_pool)
+        title_line = next(
+            (line for line in title_pool if line["font_size"] >= max_size - 0.5),
+            title_pool[0],
+        )
+        title = re.sub(r"^[\s•◦▪▫‣⁃–—*-]+", "", title_line["text"]).strip()
+        if not title:
+            title = title_line["text"]
+    elif filtered:
+        title = filtered[0]["text"]
+    else:
+        title = f"Slide {slide_number}"
+
+    visible_text = _unique_lines([line["text"] for line in non_code_lines])
+    code_blocks = _group_pdf_code_blocks(code_lines)
+    if not visible_text and code_blocks:
+        visible_text = _unique_lines([line["text"] for line in filtered])
+    return title, visible_text, code_blocks
+
+
+def _extract_pdf_tables(page) -> list[str]:
+    """Extract structured tables from a PDF page into Markdown tables."""
+    find_tables = getattr(page, "find_tables", None)
+    if not callable(find_tables):
+        return []
+    try:
+        table_finder = find_tables()
+        detected_tables = getattr(table_finder, "tables", None) or []
+    except Exception:
+        return []
+
+    tables: list[str] = []
+    table_chars = 0
+    table_cells = 0
+    for table_index, table in enumerate(detected_tables, start=1):
+        try:
+            raw_rows = table.extract() or []
+        except Exception:
+            continue
+        rows: list[list[str]] = []
+        for raw_row in raw_rows:
+            if not raw_row:
+                continue
+            cells = []
+            for cell in raw_row:
+                raw_cell = str(cell or "")
+                table_chars += len(raw_cell)
+                table_cells += 1
+                if (
+                    table_chars > _MAX_PDF_TABLE_CHARS_PER_PAGE
+                    or table_cells > _MAX_PDF_TABLE_CELLS_PER_PAGE
+                ):
+                    raise ValueError("PDF page tables exceed the extraction safety limit.")
+                normalized = re.sub(
+                    r"\s*\n\s*", "<br>", raw_cell.replace("\r\n", "\n")
+                )
+                cells.append(_clean_text(normalized).replace("|", "\\|"))
+            if any(cells):
+                rows.append(cells)
+        if len(rows) < 2:
+            continue
+        width = max(len(row) for row in rows)
+        if width < 2:
+            continue
+        padded = [row + [""] * (width - len(row)) for row in rows]
+        header = padded[0]
+        body = padded[1:]
+        markdown = [f"Table {table_index}:", "| " + " | ".join(header) + " |"]
+        markdown.append("| " + " | ".join(["---"] * width) + " |")
+        markdown.extend("| " + " | ".join(row) + " |" for row in body)
+        tables.append("\n".join(markdown))
+    return tables
+
+
+def _extract_pdf_annotations(page) -> str:
+    """Extract text annotations / sticky notes attached to a PDF slide."""
+    annots_fn = getattr(page, "annots", None)
+    if not callable(annots_fn):
+        return ""
+    notes: list[str] = []
+    note_chars = 0
+    try:
+        for annot in annots_fn() or []:
+            info = getattr(annot, "info", None) or {}
+            content = _clean_text(info.get("content") or "")
+            if content:
+                note_chars += len(content)
+                if note_chars > _MAX_PDF_ANNOTATION_CHARS_PER_PAGE:
+                    raise ValueError(
+                        "PDF page annotations exceed the extraction safety limit."
+                    )
+                notes.append(content)
+    except ValueError:
+        raise
+    except Exception:
+        return ""
+    return "\n".join(_unique_lines(notes))
+
+
+def _extract_pdf_links(page) -> list[str]:
+    """Extract unique HTTP(S) reference URLs embedded in a PDF slide."""
+    get_links = getattr(page, "get_links", None)
+    if not callable(get_links):
+        return []
+    urls: list[str] = []
+    try:
+        for link in get_links() or []:
+            uri = str(link.get("uri") or "").strip()
+            try:
+                parsed = urlsplit(uri)
+            except ValueError:
+                continue
+            if (
+                len(uri) <= _MAX_PDF_LINK_CHARS
+                and not any(char.isspace() or ord(char) < 32 for char in uri)
+                and parsed.scheme in {"http", "https"}
+                and bool(parsed.netloc)
+                and uri not in urls
+            ):
+                urls.append(uri)
+                if len(urls) >= _MAX_PDF_LINKS_PER_PAGE:
+                    break
+    except Exception:
+        return []
+    return urls
+
+
+def _markdown_code_block(snippet: str) -> list[str]:
+    """Wrap extracted code without letting embedded backticks terminate the block."""
+    longest_run = max((len(run) for run in re.findall(r"`+", snippet)), default=0)
+    fence = "`" * max(3, longest_run + 1)
+    return [fence, snippet, fence, ""]
+
+
+def _has_meaningful_vector_diagram(
+    drawings: list[dict],
+    page_width: float,
+    page_height: float,
+    text_lines: list[str],
+) -> bool:
+    """Distinguish real vector diagrams from slide-theme headers, footers, and backgrounds."""
+    if not drawings or page_width <= 0 or page_height <= 0:
+        return False
+    page_area = max(page_width * page_height, 1.0)
+    content_drawings = 0
+    content_items = 0
+    union_x0: float | None = None
+    union_y0: float | None = None
+    union_x1: float | None = None
+    union_y1: float | None = None
+
+    for drawing in drawings:
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        x0, y0, x1, y1 = float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)
+        width = max(x1 - x0, 0.0)
+        height = max(y1 - y0, 0.0)
+        area_ratio = (width * height) / page_area
+
+        # Ignore full-slide background fills/borders
+        if area_ratio >= 0.70:
+            continue
+        # Ignore theme header/footer margin bars
+        if y1 <= page_height * 0.12 or y0 >= page_height * 0.88:
+            continue
+        # Ignore tiny bullets/dots or single thin horizontal divider rules
+        if width < 4.0 and height < 4.0:
+            continue
+        if height <= 3.0 and width >= page_width * 0.5:
+            continue
+
+        content_drawings += 1
+        content_items += len(drawing.get("items", []))
+        union_x0 = x0 if union_x0 is None else min(union_x0, x0)
+        union_y0 = y0 if union_y0 is None else min(union_y0, y0)
+        union_x1 = x1 if union_x1 is None else max(union_x1, x1)
+        union_y1 = y1 if union_y1 is None else max(union_y1, y1)
+
+    if content_drawings == 0 or union_x0 is None or union_y0 is None or union_x1 is None or union_y1 is None:
+        return False
+
+    coverage_ratio = ((union_x1 - union_x0) * (union_y1 - union_y0)) / page_area
+    sparse_text = len(text_lines) <= 12 or len(" ".join(text_lines)) <= 800
+    if coverage_ratio >= 0.12 and content_items >= 10:
+        return True
+    if sparse_text and coverage_ratio >= 0.04 and (
+        (content_drawings >= 4 and content_items >= 10) or content_items >= 15
+    ):
+        return True
+    return False
+
+
 def _extract_pdf(source_path: Path, figures_dir: Path) -> tuple[list[dict], list[dict]]:
     try:
-        import fitz
-    except ImportError as exc:
-        raise RuntimeError("PyMuPDF is required to ingest slide PDFs.") from exc
+        import pymupdf as fitz
+    except ImportError:
+        try:
+            import fitz
+        except ImportError as exc:
+            raise RuntimeError("PyMuPDF is required to ingest slide PDFs.") from exc
 
     try:
         document = fitz.open(source_path)
@@ -608,21 +1006,47 @@ def _extract_pdf(source_path: Path, figures_dir: Path) -> tuple[list[dict], list
             raise ValueError("Password-protected slide PDFs are not supported.")
         if document.page_count > _MAX_PDF_PAGES:
             raise ValueError(f"Slide PDF exceeds the {_MAX_PDF_PAGES}-page safety limit.")
+
+        pages_lines: list[list[dict]] = []
+        page_heights: list[float] = []
+        for page_index in range(document.page_count):
+            page = document.load_page(page_index)
+            pages_lines.append(_extract_pdf_lines(page))
+            page_heights.append(float(page.rect.height))
+        repeated_margins = _detect_repeated_margin_texts(pages_lines, page_heights)
+
         for page_index in range(document.page_count):
             page = document.load_page(page_index)
             slide_number = page_index + 1
-            text_lines = _unique_lines(page.get_text("text").splitlines())
-            title = text_lines[0] if text_lines else f"Slide {slide_number}"
-            page_area = max(float(page.rect.width * page.rect.height), 1.0)
+            page_width = float(page.rect.width)
+            page_height = page_heights[page_index]
+            title, text_lines, code_blocks = _parse_pdf_page_text(
+                pages_lines[page_index],
+                page_height,
+                slide_number,
+                repeated_margins,
+            )
+            tables = _extract_pdf_tables(page)
+            speaker_notes = _extract_pdf_annotations(page)
+            links = _extract_pdf_links(page)
+
+            page_area = max(page_width * page_height, 1.0)
             visual_names: list[str] = []
             visual_ordinal = 0
             seen_xrefs: set[int] = set()
-            for image_tuple in page.get_images(full=True):
+            try:
+                page_images = page.get_images(full=True)
+            except Exception:
+                page_images = []
+            for image_tuple in page_images:
                 xref = int(image_tuple[0])
                 if xref in seen_xrefs:
                     continue
                 seen_xrefs.add(xref)
-                rects = page.get_image_rects(xref)
+                try:
+                    rects = page.get_image_rects(xref)
+                except Exception:
+                    continue
                 largest_area = max(
                     (float(rect.width * rect.height) for rect in rects), default=0.0
                 )
@@ -646,11 +1070,12 @@ def _extract_pdf(source_path: Path, figures_dir: Path) -> tuple[list[dict], list
                 visual_names.append(figure_name)
                 figure_info.append(_figure_metadata(figure_name, slide_number, title))
 
-            drawings = page.get_drawings()
-            drawing_item_count = sum(len(drawing.get("items", [])) for drawing in drawings)
-            sparse_text = len(text_lines) <= 12 or len(" ".join(text_lines)) <= 800
-            if not visual_names and sparse_text and (
-                len(drawings) >= 3 or drawing_item_count >= 8
+            try:
+                drawings = page.get_drawings()
+            except Exception:
+                drawings = []
+            if not visual_names and _has_meaningful_vector_diagram(
+                drawings, page_width, page_height, text_lines
             ):
                 try:
                     page_image = _render_fitz_page_png(page, fitz, preferred_scale=2.0)
@@ -675,10 +1100,12 @@ def _extract_pdf(source_path: Path, figures_dir: Path) -> tuple[list[dict], list
                     "hidden": False,
                     "included_in_book": True,
                     "visible_text": text_lines,
-                    "tables": [],
+                    "code_blocks": code_blocks,
+                    "tables": tables,
                     "chart_data": [],
                     "diagram_text": [],
-                    "speaker_notes": "",
+                    "links": links,
+                    "speaker_notes": speaker_notes,
                     "figures": list(dict.fromkeys(visual_names)),
                     "unsupported_visual_count": 0,
                 }
@@ -790,6 +1217,10 @@ def _build_notes(slides: list[dict]) -> str:
         sections.extend(f"- {line}" for line in visible_text)
         if not visible_text:
             sections.append("- No extractable text. Use the source visual as the evidence and do not infer hidden claims.")
+        if slide.get("code_blocks"):
+            sections.extend(["", "### Code snippets", ""])
+            for snippet in slide["code_blocks"]:
+                sections.extend(_markdown_code_block(snippet))
         if slide.get("tables"):
             sections.extend(["", "### Tables", "", "\n\n".join(slide["tables"])])
         if slide.get("chart_data"):
@@ -798,6 +1229,9 @@ def _build_notes(slides: list[dict]) -> str:
         if slide.get("diagram_text"):
             sections.extend(["", "### SmartArt and related diagram text", ""])
             sections.extend(f"- {item}" for item in slide["diagram_text"])
+        if slide.get("links"):
+            sections.extend(["", "### Source links", ""])
+            sections.extend(f"- {url}" for url in slide["links"])
         sections.extend(["", "### Speaker notes", ""])
         sections.append(slide.get("speaker_notes") or "No speaker notes were available.")
         sections.extend(["", "### Extracted source visuals", ""])

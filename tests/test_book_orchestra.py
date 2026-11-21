@@ -488,7 +488,7 @@ async def fetch():
     def test_pdf_slide_ingestion_reports_missing_pymupdf(self):
         from utils.slide_ingestion import _extract_pdf
 
-        with patch.dict("sys.modules", {"fitz": None}):
+        with patch.dict("sys.modules", {"pymupdf": None, "fitz": None}):
             with self.assertRaisesRegex(RuntimeError, "PyMuPDF is required"):
                 _extract_pdf("missing.pdf", "unused-figures")
 
@@ -565,6 +565,178 @@ async def fetch():
         self.assertEqual(calls[1], (MaskedFitz.csRGB, cmyk))
         self.assertEqual(calls[2], (document, 8))
         self.assertEqual(calls[3], (rgb, mask))
+
+    def test_pdf_slide_structure_code_tables_links_and_vector_filter(self):
+        from types import SimpleNamespace
+        from utils.slide_ingestion import (
+            _build_notes,
+            _detect_repeated_margin_texts,
+            _extract_pdf_annotations,
+            _extract_pdf_lines,
+            _extract_pdf_links,
+            _extract_pdf_tables,
+            _has_meaningful_vector_diagram,
+            _parse_pdf_page_text,
+        )
+
+        class FakePage:
+            def __init__(self, page_num):
+                self.page_num = page_num
+
+            def get_text(self, mode="text"):
+                if mode == "dict":
+                    return {
+                        "blocks": [
+                            {
+                                "type": 0,
+                                "lines": [
+                                    {
+                                        "bbox": (40, 15, 300, 30),
+                                        "spans": [
+                                            {"text": "CS101 Async Systems", "size": 10.0, "font": "Helvetica", "flags": 0}
+                                        ],
+                                    },
+                                    {
+                                        "bbox": (40, 60, 500, 92),
+                                        "spans": [
+                                            {"text": f"Topic {self.page_num}: Structured Concurrency", "size": 24.0, "font": "Helvetica-Bold", "flags": 16}
+                                        ],
+                                    },
+                                    {
+                                        "bbox": (40, 130, 500, 146),
+                                        "spans": [
+                                            {"text": "TaskGroup bounds child lifetimes.", "size": 14.0, "font": "Helvetica", "flags": 0}
+                                        ],
+                                    },
+                                    {
+                                        "bbox": (60, 180, 320, 194),
+                                        "spans": [
+                                            {"text": "async with asyncio.TaskGroup() as tg:", "size": 12.0, "font": "Menlo", "flags": 8}
+                                        ],
+                                    },
+                                    {
+                                        "bbox": (88.8, 198, 320, 212),
+                                        "spans": [
+                                            {"text": "tg.create_task(fetch())", "size": 12.0, "font": "Menlo", "flags": 8}
+                                        ],
+                                    },
+                                    {
+                                        "bbox": (700, 415, 770, 430),
+                                        "spans": [
+                                            {"text": f"{self.page_num} / 3", "size": 9.0, "font": "Helvetica", "flags": 0}
+                                        ],
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                return ""
+
+            def find_tables(self):
+                class FakeTable:
+                    def extract(self):
+                        return [["Tool", "Behavior"], ["gather", "Collects results"], ["TaskGroup", "Cancels siblings"]]
+
+                return SimpleNamespace(tables=[FakeTable()])
+
+            def annots(self):
+                return [SimpleNamespace(info={"content": "Remind students about PEP 654."})]
+
+            def get_links(self):
+                return [
+                    {"uri": "https://peps.python.org/pep-0654/"},
+                    {"uri": "https://peps.python.org/pep-0654/"},
+                    {"uri": "mailto:ignored@example.com"},
+                ]
+
+        pages = [FakePage(1), FakePage(2), FakePage(3)]
+        pages_lines = [_extract_pdf_lines(p) for p in pages]
+        repeated_margins = _detect_repeated_margin_texts(pages_lines, [450.0, 450.0, 450.0])
+        self.assertIn("CS101 Async Systems", repeated_margins)
+
+        title, visible_text, code_blocks = _parse_pdf_page_text(
+            pages_lines[0], 450.0, 1, repeated_margins
+        )
+        self.assertEqual(title, "Topic 1: Structured Concurrency")
+        self.assertNotIn("CS101 Async Systems", visible_text)
+        self.assertNotIn("1 / 3", visible_text)
+        self.assertEqual(len(code_blocks), 1)
+        self.assertIn("async with asyncio.TaskGroup() as tg:\n    tg.create_task(fetch())", code_blocks[0])
+
+        tables = _extract_pdf_tables(pages[0])
+        self.assertEqual(len(tables), 1)
+        self.assertIn("| Tool | Behavior |", tables[0])
+        self.assertEqual(_extract_pdf_annotations(pages[0]), "Remind students about PEP 654.")
+        self.assertEqual(_extract_pdf_links(pages[0]), ["https://peps.python.org/pep-0654/"])
+
+        notes_md = _build_notes(
+            [
+                {
+                    "slide_number": 1,
+                    "source_locator": "page 1",
+                    "title": title,
+                    "included_in_book": True,
+                    "visible_text": visible_text,
+                    "code_blocks": code_blocks,
+                    "tables": tables,
+                    "links": ["https://peps.python.org/pep-0654/"],
+                    "speaker_notes": "Remind students about PEP 654.",
+                    "figures": [],
+                }
+            ]
+        )
+        self.assertIn("### Code snippets", notes_md)
+        self.assertIn("    tg.create_task(fetch())", notes_md)
+        self.assertIn("### Source links", notes_md)
+        self.assertIn("https://peps.python.org/pep-0654/", notes_md)
+
+        multiline_table = SimpleNamespace(
+            extract=lambda: [["Column", "Meaning"], ["first\nline", "a | b"]]
+        )
+        pages[0].find_tables = lambda: SimpleNamespace(tables=[multiline_table])
+        escaped_table = _extract_pdf_tables(pages[0])[0]
+        self.assertIn("first<br>line", escaped_table)
+        self.assertIn(r"a \| b", escaped_table)
+
+        fenced_notes = _build_notes(
+            [
+                {
+                    "slide_number": 1,
+                    "source_locator": "page 1",
+                    "title": "Fence safety",
+                    "included_in_book": True,
+                    "visible_text": [],
+                    "code_blocks": ["print('```')"],
+                    "figures": [],
+                }
+            ]
+        )
+        self.assertIn("````\nprint('```')\n````", fenced_notes)
+
+        def make_rect(x0, y0, x1, y1):
+            return SimpleNamespace(x0=x0, y0=y0, x1=x1, y1=y1)
+
+        # Decorative theme chrome only -> should NOT trigger vector fallback
+        theme_only_drawings = [
+            {"rect": make_rect(0, 0, 800, 450), "items": [("re",)]},
+            {"rect": make_rect(0, 0, 800, 40), "items": [("re",)] * 5},
+            {"rect": make_rect(0, 410, 800, 450), "items": [("re",)] * 5},
+            {"rect": make_rect(40, 100, 760, 102), "items": [("l",)]},
+        ]
+        self.assertFalse(
+            _has_meaningful_vector_diagram(theme_only_drawings, 800.0, 450.0, visible_text)
+        )
+
+        # Real content-area architecture boxes & connectors -> SHOULD trigger vector fallback
+        diagram_drawings = [
+            {"rect": make_rect(80, 140, 220, 220), "items": [("re",), ("l",), ("l",)]},
+            {"rect": make_rect(260, 140, 400, 220), "items": [("re",), ("l",), ("l",)]},
+            {"rect": make_rect(440, 140, 580, 220), "items": [("re",), ("l",), ("l",)]},
+            {"rect": make_rect(220, 175, 260, 185), "items": [("l",), ("l",)]},
+        ]
+        self.assertTrue(
+            _has_meaningful_vector_diagram(diagram_drawings, 800.0, 450.0, visible_text)
+        )
 
     def test_slide_ingestion_bounded_zip_reads_and_preflight_validation(self):
         from utils.path_security import (

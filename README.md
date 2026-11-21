@@ -125,7 +125,7 @@ Inside `output_dir`:
 - `preview_book.pdf`: Semantic HTML preview with embedded Unicode/CJK font, generated only when no TeX engine is installed and `strict_latex=false`
 - `build_manifest.json`: Build metadata recording `render_mode` (`pdflatex`, `tectonic`, or `preview`) and `is_publication_grade`
 - `final_book.tex`: Complete compilable LaTeX book manuscript (with `references.bib` and `figures/` synced at `output_dir` root)
-- `final_book.md`: Clean Markdown book manuscript for Markdown/Pandoc/EPUB workflows
+- `final_book.md`: Clean Markdown book manuscript for Markdown/Pandoc/EPUB workflows; always exported alongside TeX/PDF for proposal, slide/PDF, and codebase inputs
 - `latex_writeup/chapters/ch01_*.tex`, `ch02_*.tex`, ...: Modular chapter-by-chapter LaTeX files
 - `book_continuity_ledger.json`: Tracked glossary terms, chapter titles, code listings, and cross-reference labels
 - `raw_materials/slide_source_manifest.json`: Slide/page-level provenance, original source hash, notes, and extracted-visual map when `--slides_file` is used

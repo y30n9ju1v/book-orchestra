@@ -210,6 +210,41 @@ def _read_text(path: str) -> str:
         return f.read()
 
 
+def _write_final_markdown_export(latex_text: str, output_path: str) -> str:
+    """Atomically export the final manuscript to Markdown or fail the build."""
+    temporary_path = output_path + ".tmp"
+    try:
+        markdown_text = latex_to_markdown(latex_text)
+        if not markdown_text.strip():
+            raise ValueError("Final Markdown export is empty.")
+        with open(temporary_path, "w", encoding="utf-8") as markdown_file:
+            markdown_file.write(markdown_text)
+        os.replace(temporary_path, output_path)
+    except Exception:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        raise
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+    return output_path
+
+
+def _detect_source_input_type(
+    slide_manifest: dict,
+    codebase_manifest: dict,
+    proposal_path: str,
+    notes_path: str,
+) -> str:
+    if codebase_manifest:
+        return "codebase"
+    if slide_manifest:
+        return "slides"
+    if proposal_path.lower().endswith(".md") and notes_path.lower().endswith(".md"):
+        return "markdown"
+    return "prepared_text"
+
+
 def _load_slide_source_context(raw_materials_dir: str) -> tuple[dict, str]:
     """Load compact provenance without duplicating all extracted slide text in prompts."""
     manifest_path = os.path.join(raw_materials_dir, "slide_source_manifest.json")
@@ -813,6 +848,12 @@ async def run_book_orchestra_workflow(
     )
     codebase_source_manifest, codebase_source_context = _load_codebase_source_context(
         target_raw_dir
+    )
+    source_input_type = _detect_source_input_type(
+        slide_source_manifest,
+        codebase_source_manifest,
+        proposal_path,
+        notes_path,
     )
     template_text = _read_text(template_path)
     guidelines_text = _read_text(guidelines_path)
@@ -1816,10 +1857,7 @@ async def run_book_orchestra_workflow(
     # Final staged export & verification pipeline via pipeline_fn
     async def _finalize_stage(stage_name: str):
         if stage_name == "markdown_export":
-            md_content = latex_to_markdown(current_tex)
-            with open(final_book_md, "w", encoding="utf-8") as f:
-                f.write(md_content)
-            return final_book_md
+            return _write_final_markdown_export(current_tex, final_book_md)
         if stage_name == "chapter_and_ledger_sync":
             chapters = _export_modular_chapters(current_tex, latex_writeup_dir)
             _update_continuity_ledger(continuity_ledger, current_tex, chapters)
@@ -1840,6 +1878,8 @@ async def run_book_orchestra_workflow(
                 "delivered_pdf": os.path.basename(delivered_pdf),
                 "final_book_tex": os.path.basename(final_book_tex),
                 "final_book_md": os.path.basename(final_book_md),
+                "source_input_type": source_input_type,
+                "markdown_exported": os.path.isfile(final_book_md),
                 "research_cutoff": research_cutoff,
                 "strict_latex": strict_latex,
                 "author_voice": author_voice,
@@ -1918,6 +1958,7 @@ async def run_book_orchestra_workflow(
         "build_manifest": manifest_path,
         "final_book_tex": final_book_tex,
         "final_book_md": final_book_md,
+        "source_input_type": source_input_type,
         "chapters": final_chapters,
     }
 

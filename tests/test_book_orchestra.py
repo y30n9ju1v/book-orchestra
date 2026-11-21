@@ -224,6 +224,53 @@ Never deploy unbounded queues in production gateways.
             self.assertTrue(len(grids) >= 1)
             self.assertTrue(os.path.exists(grids[0]))
 
+    def test_final_markdown_export_is_guaranteed_for_non_markdown_sources(self):
+        from methods.agy_workflow_runner import (
+            _detect_source_input_type,
+            _write_final_markdown_export,
+        )
+
+        self.assertEqual(
+            _detect_source_input_type({}, {"source_type": "codebase"}, "a.md", "b.md"),
+            "codebase",
+        )
+        self.assertEqual(
+            _detect_source_input_type({"source_type": "pdf"}, {}, "a.md", "b.md"),
+            "slides",
+        )
+        self.assertEqual(_detect_source_input_type({}, {}, "a.md", "b.md"), "markdown")
+        self.assertEqual(
+            _detect_source_input_type({}, {}, "a.txt", "b.txt"), "prepared_text"
+        )
+
+        sample_tex = r"""
+\documentclass{book}
+\title{Repository Walkthrough}
+\begin{document}
+\chapter{Request Flow}
+The handler delegates work to the service layer.
+\end{document}
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            markdown_path = os.path.join(tmpdir, "final_book.md")
+            exported_path = _write_final_markdown_export(sample_tex, markdown_path)
+            self.assertEqual(exported_path, markdown_path)
+            self.assertTrue(os.path.isfile(markdown_path))
+            self.assertFalse(os.path.exists(markdown_path + ".tmp"))
+            with open(markdown_path, "r", encoding="utf-8") as stream:
+                markdown = stream.read()
+            self.assertIn("# Repository Walkthrough", markdown)
+            self.assertIn("# Request Flow", markdown)
+
+            with open(markdown_path, "w", encoding="utf-8") as stream:
+                stream.write("stale output")
+            with patch(
+                "methods.agy_workflow_runner.latex_to_markdown", return_value=""
+            ):
+                with self.assertRaisesRegex(ValueError, "Markdown export is empty"):
+                    _write_final_markdown_export(sample_tex, markdown_path)
+            self.assertFalse(os.path.exists(markdown_path))
+
     def test_semantic_preview_preserves_korean_and_hides_latex_markup(self):
         from utils.pdf_utils import compile_latex, load_book
 
@@ -1530,6 +1577,12 @@ async def acquire(tokens: int) -> bool:
             self.assertTrue(os.path.exists(res["build_manifest"]))
             self.assertTrue(os.path.exists(res["final_book_tex"]))
             self.assertTrue(os.path.exists(res["final_book_md"]))
+            self.assertEqual(res["source_input_type"], "markdown")
+            with open(res["build_manifest"], "r", encoding="utf-8") as manifest_file:
+                build_manifest = json.load(manifest_file)
+            self.assertTrue(build_manifest["markdown_exported"])
+            self.assertEqual(build_manifest["final_book_md"], "final_book.md")
+            self.assertEqual(build_manifest["source_input_type"], "markdown")
             self.assertTrue(os.path.exists(os.path.join(out_dir, "references.bib")))
             self.assertTrue(os.path.isdir(os.path.join(out_dir, "figures")))
             self.assertGreaterEqual(len(res["chapters"]), 2)

@@ -633,11 +633,16 @@ def handle_live_execution(
                     run_dir = st.session_state.run_directory
                     final_pdf_path = os.path.join(run_dir, "final_book.pdf")
                     preview_pdf_path = os.path.join(run_dir, "preview_book.pdf")
+                    final_markdown_path = os.path.join(run_dir, "final_book.md")
                     delivered_pdf_exists = os.path.exists(final_pdf_path) or (
                         not st.session_state.get("strict_latex_mode", False)
                         and os.path.exists(preview_pdf_path)
                     )
-                    if process.poll() == 0 and delivered_pdf_exists:
+                    markdown_export_exists = (
+                        os.path.isfile(final_markdown_path)
+                        and os.path.getsize(final_markdown_path) > 0
+                    )
+                    if process.poll() == 0 and delivered_pdf_exists and markdown_export_exists:
                         st.session_state.current_step = len(steps_list)
                         if recipient_email:
                             attachments = []
@@ -670,7 +675,11 @@ def handle_live_execution(
                     else:
                         st.session_state.logs[
                             current_step_name
-                        ] += f"\n❌ Book generation exited with code {process.poll()} (final_book.pdf exists: {os.path.exists(final_pdf_path)}).\n"
+                        ] += (
+                            f"\n❌ Book generation exited with code {process.poll()} "
+                            f"(PDF exists: {delivered_pdf_exists}, "
+                            f"final_book.md exists: {markdown_export_exists}).\n"
+                        )
                 except Exception as exception_object:
                     st.session_state.logs[
                         "Editorial Review Board"

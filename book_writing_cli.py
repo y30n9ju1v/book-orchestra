@@ -341,6 +341,18 @@ def main(argv=None):
         )
         sys.exit(1)
 
+    final_markdown = result.get("final_book_md") if isinstance(result, dict) else None
+    if (
+        not final_markdown
+        or not os.path.isfile(final_markdown)
+        or os.path.getsize(final_markdown) == 0
+    ):
+        print(
+            f"❌ Book generation failed (final_book.md was not exported). Output dir: {base_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if args.strict_latex and not result.get("is_publication_grade", False):
         print(
             "❌ Strict LaTeX publish mode failed: only preview PDF was produced.",

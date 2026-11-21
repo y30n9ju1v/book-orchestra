@@ -95,6 +95,28 @@ python3 book_writing_cli.py \
 지시합니다. 불릿 사이의 전제와 인과관계는 풀어 쓰되, 원본에 없는 수치·주장·발표자 의도는
 만들지 않습니다.
 
+### 4. Turn a Codebase into an Explanatory Book
+
+로컬 프로젝트 또는 별도로 clone한 저장소를 정적 분석하여 아키텍처와 주요 실행 흐름을
+설명하는 책을 만들 수 있습니다. 수집 단계에서는 프로젝트 코드를 실행하지 않습니다. `.git`,
+의존성, 빌드 산출물, 바이너리, 비밀 파일과 심볼릭 링크를 제외하고 문서·설정·소스·테스트 중
+대표 파일을 선택합니다. 비밀값으로 보이는 리터럴은 `<REDACTED>`로 치환하며, 원본 해시와
+경로·언어·심볼 정보를 `codebase_source_manifest.json`에 기록합니다.
+
+```bash
+python3 book_writing_cli.py \
+  --codebase_dir /path/to/local/repository \
+  --latex_template_dir templates/oreilly_style_book \
+  --output_dir ./book_output_codebase \
+  --target_audience "이 프로젝트를 처음 유지보수하는 개발자" \
+  --book_style "아키텍처에서 실제 요청 흐름으로 내려가는 코드 워크스루" \
+  --author_voice "근거 경로를 제시하며 친절하게 설명하는 시니어 개발자"
+```
+
+`--codebase_dir`, `--slides_file`, `--raw_materials_dir`은 상호 배타적입니다. 다른 저장소를
+다룰 때는 자동 clone 대신 사용자가 검토한 로컬 checkout을 입력합니다. 출판 전에는 해당
+저장소의 라이선스와 소스 인용 조건을 확인해야 합니다.
+
 ---
 
 ## Generated Outputs
@@ -107,6 +129,8 @@ Inside `output_dir`:
 - `latex_writeup/chapters/ch01_*.tex`, `ch02_*.tex`, ...: Modular chapter-by-chapter LaTeX files
 - `book_continuity_ledger.json`: Tracked glossary terms, chapter titles, code listings, and cross-reference labels
 - `raw_materials/slide_source_manifest.json`: Slide/page-level provenance, original source hash, notes, and extracted-visual map when `--slides_file` is used
+- `raw_materials/codebase_source_manifest.json`: Selected path/symbol/hash provenance and redaction metadata when `--codebase_dir` is used
+- `raw_materials/source_code/`: Secret-redacted snapshot of the selected codebase evidence files
 - `outline.json`: Complete Book Blueprint & TOC
 - `literature_agent_output/citation_map.json` & `references.bib`: Verified references
 - `content_refinement_workdir/peer_reviews/`: 3-Persona Editorial Review Board evaluations

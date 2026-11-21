@@ -245,6 +245,70 @@ def validate_slide_output_workspace(
     return source_resolved, template_resolved, output_resolved
 
 
+def validate_codebase_output_workspace(
+    codebase_dir: str | os.PathLike,
+    latex_template_dir: str | os.PathLike,
+    output_dir: str | os.PathLike,
+) -> Tuple[Path, Path, Path]:
+    """Validate codebase ingestion paths without forbidding an output inside the repo."""
+    source_resolved = resolve_path(codebase_dir)
+    template_resolved = resolve_path(latex_template_dir)
+    output_resolved = resolve_path(output_dir)
+
+    if not source_resolved.exists() or not source_resolved.is_dir():
+        raise ValueError(
+            f"Codebase source '{codebase_dir}' does not exist or is not a directory."
+        )
+    if not template_resolved.exists() or not template_resolved.is_dir():
+        raise ValueError(
+            f"LaTeX template directory '{latex_template_dir}' does not exist."
+        )
+    missing_template_files = [
+        filename
+        for filename in ("template.tex", "guidelines.md")
+        if not (template_resolved / filename).is_file()
+    ]
+    if missing_template_files:
+        raise ValueError(
+            f"LaTeX template directory '{template_resolved}' is missing required "
+            f"file(s): {', '.join(missing_template_files)}."
+        )
+    if output_resolved.exists() and not output_resolved.is_dir():
+        raise ValueError(f"Output path '{output_dir}' exists and is not a directory.")
+
+    if source_resolved == output_resolved or source_resolved.is_relative_to(
+        output_resolved
+    ):
+        raise ValueError(
+            "Codebase source cannot equal or be placed inside output_dir because "
+            "managed output replacement could destroy source files."
+        )
+    if output_resolved.is_relative_to(source_resolved):
+        relative_output = output_resolved.relative_to(source_resolved)
+        if any(part.lower() in {".git", ".hg", ".svn"} for part in relative_output.parts):
+            raise ValueError("Output directory cannot be placed inside VCS metadata.")
+
+    if template_resolved == output_resolved or output_resolved.is_relative_to(
+        template_resolved
+    ):
+        raise ValueError(
+            f"Output directory '{output_resolved}' cannot overlap latex_template_dir "
+            f"'{template_resolved}'."
+        )
+    target_raw_dir = (output_resolved / "raw_materials").resolve()
+    latex_writeup_dir = (output_resolved / "latex_writeup").resolve()
+    refinement_dir = (output_resolved / "content_refinement_workdir").resolve()
+    if any(
+        template_resolved.is_relative_to(managed_dir)
+        for managed_dir in (target_raw_dir, latex_writeup_dir, refinement_dir)
+    ):
+        raise ValueError(
+            f"LaTeX template directory '{template_resolved}' overlaps managed output "
+            f"subdirectories in '{output_resolved}'."
+        )
+    return source_resolved, template_resolved, output_resolved
+
+
 def prepare_safe_output_workspace(
     raw_materials_dir: str,
     latex_template_dir: str,

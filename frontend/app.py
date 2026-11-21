@@ -96,6 +96,7 @@ def initialize_session_state():
         "generated_figures": [],
         "slide_source_bytes": None,
         "slide_source_name": None,
+        "codebase_source_path": "",
         "run_directory": None,
         "email_confirmed": False,
         "error_message": "",
@@ -400,7 +401,16 @@ def handle_live_execution(
     if st.session_state.running:
         if not st.session_state.get("thread_started"):
             has_slide_source = bool(st.session_state.get("saved_slide_bytes"))
-            if not has_slide_source and (
+            has_codebase_source = bool(
+                str(st.session_state.get("saved_codebase_path") or "").strip()
+            )
+            if has_slide_source and has_codebase_source:
+                st.session_state.error_message = "❌ Choose either lecture slides or a codebase, not both."
+                st.session_state.running = False
+                st.session_state.locked = False
+                st.session_state.hide_inputs = False
+                st.rerun()
+            if not has_slide_source and not has_codebase_source and (
                 not st.session_state.get("saved_idea")
                 or not st.session_state.get("saved_log")
             ):
@@ -422,7 +432,7 @@ def handle_live_execution(
             figures_directory = os.path.join(raw_materials_directory, "figures")
 
             os.makedirs(run_directory, exist_ok=True)
-            if not has_slide_source:
+            if not has_slide_source and not has_codebase_source:
                 os.makedirs(raw_materials_directory, exist_ok=True)
                 os.makedirs(figures_directory, exist_ok=True)
 
@@ -472,6 +482,10 @@ def handle_live_execution(
             ]
             if slide_source_path:
                 command.extend(["--slides_file", slide_source_path])
+            elif has_codebase_source:
+                command.extend(
+                    ["--codebase_dir", st.session_state.saved_codebase_path]
+                )
             else:
                 command.extend(["--raw_materials_dir", raw_materials_directory])
             if enable_plotting == "Yes":
@@ -501,6 +515,7 @@ def handle_live_execution(
                 slide_bytes,
                 slide_path,
                 slide_temp_dir,
+                codebase_path,
             ):
                 try:
                     preexec_fn = None
@@ -520,7 +535,7 @@ def handle_live_execution(
                     if slide_bytes and slide_path:
                         with open(slide_path, "wb") as file_object:
                             file_object.write(slide_bytes)
-                    else:
+                    elif not codebase_path:
                         os.makedirs(raw_materials_dir, exist_ok=True)
                         os.makedirs(figures_dir, exist_ok=True)
                         with open(
@@ -543,7 +558,7 @@ def handle_live_execution(
                         sanitize_upload_filename,
                     )
 
-                    for figure in figures_list if not slide_bytes else []:
+                    for figure in figures_list if not slide_bytes and not codebase_path else []:
                         if isinstance(figure["file"], str):
                             with open(figure["file"], "rb") as src_f:
                                 raw_fig_bytes = src_f.read()
@@ -681,6 +696,7 @@ def handle_live_execution(
                     st.session_state.get("saved_slide_bytes"),
                     slide_source_path,
                     slide_upload_dir,
+                    st.session_state.get("saved_codebase_path"),
                 ),
             )
             add_script_run_ctx(worker_thread)
@@ -715,6 +731,25 @@ if not st.session_state.get("hide_inputs"):
             st.session_state.error_message = ""
 
         st.header("📝 Book Source Materials")
+        st.subheader("💻 Local Codebase (Optional Alternative Input)")
+        st.caption(
+            "Enter a local project or cloned repository directory available to this server. "
+            "BookOrchestra performs static, secret-redacted source inspection and does not execute the project."
+        )
+        codebase_source_path = st.text_input(
+            "Local codebase directory",
+            value=st.session_state.get("codebase_source_path", ""),
+            placeholder="/absolute/path/to/repository",
+            disabled=st.session_state.locked
+            or bool(st.session_state.get("slide_source_bytes")),
+            key="codebase_source_path_main",
+        )
+        st.session_state.codebase_source_path = codebase_source_path.strip()
+        if st.session_state.codebase_source_path:
+            st.info(
+                "Codebase mode selected. Proposal, notes, slide upload, and separate figure inputs are disabled."
+            )
+
         st.subheader("🎞️ Lecture Slides (Optional Alternative Input)")
         st.caption(
             "Upload a PPTX or slide PDF to extract slide text, speaker notes, tables, "
@@ -723,7 +758,8 @@ if not st.session_state.get("hide_inputs"):
         uploaded_slides = st.file_uploader(
             "Upload lecture slides",
             type=["pptx", "pdf"],
-            disabled=st.session_state.locked,
+            disabled=st.session_state.locked
+            or bool(st.session_state.get("codebase_source_path")),
             key="slide_uploader_main",
         )
         if uploaded_slides:
@@ -739,7 +775,7 @@ if not st.session_state.get("hide_inputs"):
 
         manual_inputs_disabled = st.session_state.locked or bool(
             st.session_state.get("slide_source_bytes")
-        )
+        ) or bool(st.session_state.get("codebase_source_path"))
 
         column_1, column_2 = st.columns(2)
 
@@ -821,6 +857,11 @@ if not st.session_state.get("hide_inputs"):
                 "The slide deck's reusable visuals will be extracted automatically. "
                 "Separate figure uploads are available with Proposal & Notes input."
             )
+        elif st.session_state.get("codebase_source_path"):
+            st.info(
+                "Codebase architecture diagrams will be planned from grounded source evidence. "
+                "Separate figure uploads are available with Proposal & Notes input."
+            )
         figure_column_1, figure_column_2 = st.columns([1, 2])
         with figure_column_1:
             figure_file = st.file_uploader(
@@ -842,6 +883,7 @@ if not st.session_state.get("hide_inputs"):
                     "Add Figure",
                     disabled=st.session_state.locked
                     or bool(st.session_state.get("slide_source_bytes"))
+                    or bool(st.session_state.get("codebase_source_path"))
                     or not figure_file
                     or not figure_caption,
                 ):
@@ -869,6 +911,9 @@ if not st.session_state.get("hide_inputs"):
             )
             st.session_state.saved_slide_name = st.session_state.get(
                 "slide_source_name"
+            )
+            st.session_state.saved_codebase_path = st.session_state.get(
+                "codebase_source_path"
             )
             st.session_state.locked = True
             st.session_state.running = True

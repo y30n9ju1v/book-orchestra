@@ -36,6 +36,8 @@ Call the `run_workflow` tool with `ScriptPath` pointing to `workflows/book_orche
 
 For lecture material, pass `"slides_file": "path/to/lecture.pptx"` (or a slide PDF) instead of preparing Markdown manually. BookOrchestra extracts visible text, speaker notes, tables/chart caches, and reusable images into managed raw materials, preserves the original deck and a SHA-256 source manifest, and applies a friendly explanatory-book contract.
 
+For an existing software project, pass `"codebase_dir": "path/to/local/repository"`. BookOrchestra statically inventories supported source, documentation, configuration, and tests; excludes VCS metadata, dependencies, build outputs, binary/secret files, and symlinks; redacts secret-like literals; and creates `codebase_source_manifest.json`, a sanitized selected-source snapshot, and a path/symbol-grounded explanation contract. Never execute code during ingestion. Clone remote repositories separately, review their license, and then pass the local directory; do not ask for repository credentials.
+
 ## Recommended Model & Agent Tier Routing
 - **Coordinator / Parent Chat**: **Gemini 4 Neon** (Medium effort) — best suited for deep analysis, complex coding, and multi-agent workflow orchestration.
 - **Role-based tiers (`Args` defaults)**:

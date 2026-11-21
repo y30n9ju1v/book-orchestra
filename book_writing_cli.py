@@ -33,6 +33,10 @@ def build_arg_parser(default_description: str = None) -> argparse.ArgumentParser
         "--slides_file",
         help="Lecture slides to turn into a friendly explanatory book (.pptx or slide .pdf).",
     )
+    source_group.add_argument(
+        "--codebase_dir",
+        help="Local project/repository directory to turn into a code-grounded explanatory book.",
+    )
     parser.add_argument(
         "--output_dir",
         default=None,
@@ -158,6 +162,9 @@ def main(argv=None):
     if args.slides_file and not os.path.isfile(args.slides_file):
         print(f"Error: Slides file '{args.slides_file}' does not exist.")
         sys.exit(1)
+    if args.codebase_dir and not os.path.isdir(args.codebase_dir):
+        print(f"Error: Codebase directory '{args.codebase_dir}' does not exist.")
+        sys.exit(1)
 
     if args.output_dir:
         base_dir = args.output_dir
@@ -167,6 +174,7 @@ def main(argv=None):
 
     from utils.path_security import (
         prepare_safe_output_workspace,
+        validate_codebase_output_workspace,
         validate_slide_output_workspace,
     )
 
@@ -194,6 +202,29 @@ def main(argv=None):
             )
         except (OSError, RuntimeError, ValueError) as err:
             print(f"❌ Could not ingest lecture slides: {err}", file=sys.stderr)
+            sys.exit(1)
+    elif args.codebase_dir:
+        from utils.codebase_ingestion import prepare_codebase_materials
+
+        try:
+            validate_codebase_output_workspace(
+                args.codebase_dir, args.latex_template_dir, base_dir
+            )
+            codebase_result = prepare_codebase_materials(
+                args.codebase_dir,
+                os.path.join(base_dir, "raw_materials"),
+                target_audience=args.target_audience,
+                book_style=args.book_style,
+                author_voice=args.author_voice,
+            )
+            raw_materials_dir = codebase_result["raw_materials_dir"]
+            print(
+                "💻 Prepared codebase-grounded source materials "
+                f"({codebase_result['included_file_count']} evidence files, "
+                f"{codebase_result['redaction_count']} secret-like values redacted)."
+            )
+        except (OSError, RuntimeError, ValueError) as err:
+            print(f"❌ Could not ingest codebase: {err}", file=sys.stderr)
             sys.exit(1)
 
     try:

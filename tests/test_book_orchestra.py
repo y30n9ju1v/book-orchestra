@@ -276,6 +276,11 @@ async def fetch():
         self.assertEqual(slide_args.slides_file, "lecture.pptx")
         self.assertIsNone(slide_args.raw_materials_dir)
 
+        codebase_args = parser.parse_args(["--codebase_dir", "./project"])
+        self.assertEqual(codebase_args.codebase_dir, "./project")
+        self.assertIsNone(codebase_args.raw_materials_dir)
+        self.assertIsNone(codebase_args.slides_file)
+
         with self.assertRaises(SystemExit):
             parser.parse_args(
                 [
@@ -285,6 +290,119 @@ async def fetch():
                     "raw_materials",
                 ]
             )
+
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "--codebase_dir",
+                    "./project",
+                    "--raw_materials_dir",
+                    "raw_materials",
+                ]
+            )
+
+    def test_codebase_ingestion_builds_redacted_grounded_materials(self):
+        from utils.codebase_ingestion import prepare_codebase_materials
+        from utils.path_security import validate_codebase_output_workspace
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = os.path.join(tmpdir, "sample_project")
+            template = os.path.join(tmpdir, "template")
+            output = os.path.join(root, "book_output_codebase")
+            os.makedirs(os.path.join(root, "src"))
+            os.makedirs(os.path.join(root, "tests"))
+            os.makedirs(os.path.join(root, "node_modules"))
+            os.makedirs(template)
+            with open(os.path.join(template, "template.tex"), "w", encoding="utf-8") as stream:
+                stream.write(r"\documentclass{book}\begin{document}\end{document}")
+            with open(os.path.join(template, "guidelines.md"), "w", encoding="utf-8") as stream:
+                stream.write("# Guidelines")
+            with open(os.path.join(root, "README.md"), "w", encoding="utf-8") as stream:
+                stream.write("# Queue Service\nProcesses jobs with bounded retries.\n")
+            with open(os.path.join(root, "pyproject.toml"), "w", encoding="utf-8") as stream:
+                stream.write('[project]\nname = "queue-service"\n')
+            with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as stream:
+                stream.write('{"client_secret": "json-secret-must-not-leak"}\n')
+            source_path = os.path.join(root, "src", "main.py")
+            with open(source_path, "w", encoding="utf-8") as stream:
+                stream.write(
+                    'API_KEY = "sk-this-value-must-never-reach-the-book"\n\n'
+                    "class Worker:\n"
+                    "    def run(self, job):\n"
+                    "        return job.execute()\n"
+                )
+            with open(os.path.join(root, "tests", "test_main.py"), "w", encoding="utf-8") as stream:
+                stream.write("def test_worker_contract():\n    assert True\n")
+            with open(os.path.join(root, ".env"), "w", encoding="utf-8") as stream:
+                stream.write("PASSWORD=do-not-read\n")
+            with open(os.path.join(root, ".env.staging"), "w", encoding="utf-8") as stream:
+                stream.write("SECRET=staging-do-not-read\n")
+            with open(os.path.join(root, "secrets.yaml"), "w", encoding="utf-8") as stream:
+                stream.write("token: yaml-secret-do-not-read\n")
+            with open(os.path.join(root, "src", "token.py"), "w", encoding="utf-8") as stream:
+                stream.write(
+                    'DB_URL = "postgres://admin:supersecretpw@db.internal:5432/app"\n'
+                    'GOOGLE_KEY = "AIzaSyA12345678901234567890123456789012"\n'
+                    "def verify_token(raw: str) -> bool:\n"
+                    "    return bool(raw)\n"
+                )
+            with open(
+                os.path.join(root, "node_modules", "dependency.js"),
+                "w",
+                encoding="utf-8",
+            ) as stream:
+                stream.write("module.exports = 'ignored';\n")
+
+            validated_source, _, validated_output = validate_codebase_output_workspace(
+                root, template, output
+            )
+            self.assertEqual(str(validated_source), os.path.realpath(root))
+            self.assertEqual(str(validated_output), os.path.realpath(output))
+
+            result = prepare_codebase_materials(
+                root,
+                os.path.join(output, "raw_materials"),
+                target_audience="Developers new to this service",
+            )
+            self.assertGreaterEqual(result["included_file_count"], 4)
+            self.assertGreaterEqual(result["redaction_count"], 1)
+            with open(result["manifest_path"], "r", encoding="utf-8") as stream:
+                manifest = json.load(stream)
+            included_paths = {item["path"] for item in manifest["files"]}
+            self.assertIn("src/main.py", included_paths)
+            self.assertIn("src/token.py", included_paths)
+            self.assertNotIn(".env", included_paths)
+            self.assertNotIn(".env.staging", included_paths)
+            self.assertNotIn("secrets.yaml", included_paths)
+            self.assertNotIn("node_modules/dependency.js", included_paths)
+            self.assertTrue(manifest["snapshot_is_secret_redacted"])
+
+            with open(result["technical_notes_path"], "r", encoding="utf-8") as stream:
+                notes = stream.read()
+            self.assertIn("class Worker (line 3)", notes)
+            self.assertIn("<REDACTED>", notes)
+            self.assertNotIn("sk-this-value-must-never-reach-the-book", notes)
+            self.assertNotIn("json-secret-must-not-leak", notes)
+            self.assertNotIn("supersecretpw", notes)
+            self.assertNotIn("AIzaSyA12345678901234567890123456789012", notes)
+
+            # Verify sibling materials_dir (whose parent is tmpdir, ancestor of root) does not prune root/src
+            sibling_result = prepare_codebase_materials(
+                root, os.path.join(tmpdir, "sibling_raw_materials")
+            )
+            self.assertGreaterEqual(sibling_result["included_file_count"], 5)
+            sanitized_source = os.path.join(
+                output, "raw_materials", "source_code", "src", "main.py"
+            )
+            with open(sanitized_source, "r", encoding="utf-8") as stream:
+                self.assertNotIn("sk-this-value-must-never-reach-the-book", stream.read())
+            with open(source_path, "r", encoding="utf-8") as stream:
+                self.assertIn("sk-this-value-must-never-reach-the-book", stream.read())
+
+            with self.assertRaisesRegex(ValueError, "VCS metadata"):
+                validate_codebase_output_workspace(
+                    root, template, os.path.join(root, ".git", "book_output")
+                )
 
     def test_pptx_slide_ingestion_preserves_grounding_notes_and_visuals(self):
         import base64

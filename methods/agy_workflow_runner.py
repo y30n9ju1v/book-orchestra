@@ -95,6 +95,7 @@ from utils.path_security import (
     resolve_safe_child_path,
     safe_prepare_managed_subdir,
     sanitize_slug,
+    validate_codebase_output_workspace,
     validate_slide_output_workspace,
 )
 from utils.reference_verifier import (
@@ -247,6 +248,43 @@ def _load_slide_source_context(raw_materials_dir: str) -> tuple[dict, str]:
         f"- Hidden/excluded: {manifest.get('hidden_slide_count', 0)}\n"
         "- Traceable sequence:\n"
         + "\n".join(outline_lines)
+    )
+    return manifest, context
+
+
+def _load_codebase_source_context(raw_materials_dir: str) -> tuple[dict, str]:
+    """Load compact code provenance without duplicating source excerpts in prompts."""
+    manifest_path = os.path.join(raw_materials_dir, "codebase_source_manifest.json")
+    if not os.path.isfile(manifest_path):
+        return {}, ""
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+    except (OSError, json.JSONDecodeError):
+        return {}, ""
+    if not isinstance(manifest, dict):
+        return {}, ""
+    evidence_lines = []
+    for source_file in manifest.get("files", []):
+        if not isinstance(source_file, dict):
+            continue
+        symbols = source_file.get("symbols") or []
+        symbol_summary = ", ".join(str(symbol) for symbol in symbols[:5])
+        evidence_lines.append(
+            f"- {source_file.get('path', 'unknown')} "
+            f"({source_file.get('category', 'source')}; "
+            f"SHA-256 {source_file.get('sha256', 'unknown')}; "
+            f"symbols: {symbol_summary or 'not detected'})"
+        )
+    context = (
+        "Codebase provenance (static inspection only):\n"
+        f"- Project: {manifest.get('source_name', 'unknown')}\n"
+        f"- Source-tree SHA-256: {manifest.get('source_tree_sha256', 'unknown')}\n"
+        f"- Files discovered: {manifest.get('discovered_file_count', 0)}\n"
+        f"- Evidence files included: {manifest.get('included_file_count', len(evidence_lines))}\n"
+        f"- Secret-like values redacted: {manifest.get('redaction_count', 0)}\n"
+        "- Evidence map:\n"
+        + "\n".join(evidence_lines)
     )
     return manifest, context
 
@@ -621,6 +659,7 @@ async def run_book_orchestra_workflow(
         "raw_materials_dir", "examples/distributed_llm_systems_book/raw_materials"
     )
     slides_rel = workflow_args.get("slides_file")
+    codebase_rel = workflow_args.get("codebase_dir")
     template_rel = workflow_args.get(
         "latex_template_dir", "templates/oreilly_style_book"
     )
@@ -674,6 +713,8 @@ async def run_book_orchestra_workflow(
         if os.path.isabs(output_rel)
         else os.path.join(_WORK_ROOT, output_rel)
     )
+    if slides_rel and codebase_rel:
+        raise ValueError("slides_file and codebase_dir are mutually exclusive inputs.")
     if slides_rel:
         slides_path = (
             slides_rel
@@ -698,6 +739,30 @@ async def run_book_orchestra_workflow(
             f"{slide_result['included_slide_count']} included slides/pages, "
             f"{slide_result['hidden_slide_count']} hidden, and "
             f"{slide_result['extracted_figure_count']} reusable visuals."
+        )
+    elif codebase_rel:
+        codebase_path = (
+            codebase_rel
+            if os.path.isabs(codebase_rel)
+            else os.path.join(_WORK_ROOT, codebase_rel)
+        )
+        from utils.codebase_ingestion import prepare_codebase_materials
+
+        validate_codebase_output_workspace(
+            codebase_path, latex_template_dir, base_dir_arg
+        )
+        codebase_result = prepare_codebase_materials(
+            codebase_path,
+            os.path.join(base_dir_arg, "raw_materials"),
+            target_audience=target_audience,
+            book_style=book_style,
+            author_voice=author_voice,
+        )
+        raw_materials_dir = codebase_result["raw_materials_dir"]
+        log_fn(
+            "Prepared codebase-grounded source materials: "
+            f"{codebase_result['included_file_count']} evidence files and "
+            f"{codebase_result['redaction_count']} secret-like values redacted."
         )
     else:
         raw_materials_dir = (
@@ -746,6 +811,9 @@ async def run_book_orchestra_workflow(
     slide_source_manifest, slide_source_context = _load_slide_source_context(
         target_raw_dir
     )
+    codebase_source_manifest, codebase_source_context = _load_codebase_source_context(
+        target_raw_dir
+    )
     template_text = _read_text(template_path)
     guidelines_text = _read_text(guidelines_path)
 
@@ -763,6 +831,11 @@ async def run_book_orchestra_workflow(
         + (
             f"--- 'slide_source_manifest.json' (provenance summary) ---\n{slide_source_context}\n\n"
             if slide_source_context
+            else ""
+        )
+        + (
+            f"--- 'codebase_source_manifest.json' (provenance summary) ---\n{codebase_source_context}\n\n"
+            if codebase_source_context
             else ""
         )
         + f"--- 'template.tex' ---\n{template_text}\n\n"
@@ -1338,6 +1411,11 @@ async def run_book_orchestra_workflow(
             if slide_source_context
             else ""
         )
+        + (
+            f"--- INPUT: codebase source provenance ---\n{codebase_source_context}\n\n"
+            if codebase_source_context
+            else ""
+        )
         + f"--- INPUT: figures_list ---\n{figures_context}\n\n"
         f"--- INPUT: guidelines.md ---\n{guidelines_text}\n\n"
         f"--- INPUT: template.tex ---\n{updated_template_tex}\n\n"
@@ -1783,6 +1861,27 @@ async def run_book_orchestra_workflow(
                         "manifest": "raw_materials/slide_source_manifest.json",
                     }
                     if slide_source_manifest
+                    else None
+                ),
+                "codebase_source": (
+                    {
+                        "source_name": codebase_source_manifest.get("source_name"),
+                        "source_type": codebase_source_manifest.get("source_type"),
+                        "source_tree_sha256": codebase_source_manifest.get(
+                            "source_tree_sha256"
+                        ),
+                        "discovered_file_count": codebase_source_manifest.get(
+                            "discovered_file_count"
+                        ),
+                        "included_file_count": codebase_source_manifest.get(
+                            "included_file_count"
+                        ),
+                        "redaction_count": codebase_source_manifest.get(
+                            "redaction_count"
+                        ),
+                        "manifest": "raw_materials/codebase_source_manifest.json",
+                    }
+                    if codebase_source_manifest
                     else None
                 ),
             }

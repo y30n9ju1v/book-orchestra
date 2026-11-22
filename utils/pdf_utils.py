@@ -1114,6 +1114,7 @@ def inspect_compiled_pdf_quality(
     pdf_path: str | None,
     *,
     max_overfull_pt: float = 20.0,
+    max_overfull_vbox_pt: float = 20.0,
 ) -> dict:
     """Audit compiled TeX log and PDF text for publication-blocking defects."""
     log_text = ""
@@ -1130,6 +1131,7 @@ def inspect_compiled_pdf_quality(
         re.findall(r"multiply[- ]defined", log_text, flags=re.IGNORECASE)
     )
     missing_chars = len(re.findall(r"Missing character:", log_text))
+    float_too_large = len(re.findall(r"Float too large for page", log_text))
 
     overfull_pts = [
         float(match.group(1))
@@ -1137,6 +1139,15 @@ def inspect_compiled_pdf_quality(
     ]
     severe_overfull = [pt for pt in overfull_pts if pt > max_overfull_pt]
     max_observed_overfull = round(max(overfull_pts), 2) if overfull_pts else 0.0
+
+    overfull_vbox_pts = [
+        float(match.group(1))
+        for match in re.finditer(r"Overfull \\vbox \(([0-9.]+)pt too high\)", log_text)
+    ]
+    severe_overfull_vbox = [pt for pt in overfull_vbox_pts if pt > max_overfull_vbox_pt]
+    max_observed_overfull_vbox = (
+        round(max(overfull_vbox_pts), 2) if overfull_vbox_pts else 0.0
+    )
 
     literal_question_marks = 0
     if pdf_path and os.path.isfile(pdf_path):
@@ -1152,9 +1163,15 @@ def inspect_compiled_pdf_quality(
         failures.append(f"multiply_defined_labels={multiply_defined}")
     if missing_chars:
         failures.append(f"missing_characters={missing_chars}")
+    if float_too_large:
+        failures.append(f"float_too_large={float_too_large}")
     if severe_overfull:
         failures.append(
             f"severe_overfull_hboxes={len(severe_overfull)} (max={max_observed_overfull}pt > {max_overfull_pt}pt)"
+        )
+    if severe_overfull_vbox:
+        failures.append(
+            f"severe_overfull_vboxes={len(severe_overfull_vbox)} (max={max_observed_overfull_vbox}pt > {max_overfull_vbox_pt}pt)"
         )
     if literal_question_marks:
         failures.append(f"literal_question_marks={literal_question_marks}")
@@ -1165,9 +1182,13 @@ def inspect_compiled_pdf_quality(
         "undefined_citations": undefined_cites,
         "multiply_defined_labels": multiply_defined,
         "missing_characters": missing_chars,
+        "float_too_large": float_too_large,
         "severe_overfull_hboxes": len(severe_overfull),
         "max_overfull_pt": max_observed_overfull,
         "overfull_threshold_pt": max_overfull_pt,
+        "severe_overfull_vboxes": len(severe_overfull_vbox),
+        "max_overfull_vbox_pt": max_observed_overfull_vbox,
+        "overfull_vbox_threshold_pt": max_overfull_vbox_pt,
         "literal_question_marks": literal_question_marks,
         "failures": failures,
     }

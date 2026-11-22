@@ -87,6 +87,7 @@ from utils.pdf_utils import (
     latex_to_markdown,
     pdf_to_grid_images,
     inspect_book_layout_issues,
+    inspect_compiled_pdf_quality,
 )
 from utils.path_security import (
     detect_media_format,
@@ -1824,7 +1825,25 @@ async def run_book_orchestra_workflow(
         shutil.copy(final_valid_pdf_path, final_refined_pdf)
         render_mode = "preview"
 
-    is_publication_grade = render_mode in ("xelatex", "lualatex", "tectonic", "pdflatex")
+    tex_engine_compiled = render_mode in ("xelatex", "lualatex", "tectonic", "pdflatex")
+    final_log_path = os.path.join(refinement_workdir, "final_refined_book.log")
+    quality_gate = (
+        inspect_compiled_pdf_quality(
+            final_log_path if os.path.isfile(final_log_path) else None,
+            final_refined_pdf if os.path.isfile(final_refined_pdf) else None,
+        )
+        if tex_engine_compiled
+        else {
+            "passed": False,
+            "failures": ["non_tex_preview_render"],
+        }
+    )
+    is_publication_grade = tex_engine_compiled and bool(quality_gate.get("passed", False))
+    if tex_engine_compiled and not is_publication_grade:
+        log_fn(
+            "⚠️ Publication quality gate flagged defect(s): "
+            + ", ".join(quality_gate.get("failures", []))
+        )
     final_book_pdf = os.path.join(base_dir, "final_book.pdf")
     preview_book_pdf = os.path.join(base_dir, "preview_book.pdf")
     final_book_tex = os.path.join(base_dir, "final_book.tex")
@@ -1875,6 +1894,7 @@ async def run_book_orchestra_workflow(
                     get_last_preview_backend() if render_mode == "preview" else None
                 ),
                 "is_publication_grade": is_publication_grade,
+                "publication_quality_gate": quality_gate,
                 "delivered_pdf": os.path.basename(delivered_pdf),
                 "final_book_tex": os.path.basename(final_book_tex),
                 "final_book_md": os.path.basename(final_book_md),

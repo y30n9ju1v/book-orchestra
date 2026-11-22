@@ -1109,6 +1109,70 @@ def inspect_book_layout_issues(latex_text: str, cwd: str = None) -> dict:
     }
 
 
+def inspect_compiled_pdf_quality(
+    log_path: str | None,
+    pdf_path: str | None,
+    *,
+    max_overfull_pt: float = 20.0,
+) -> dict:
+    """Audit compiled TeX log and PDF text for publication-blocking defects."""
+    log_text = ""
+    if log_path and os.path.isfile(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
+                log_text = log_file.read()
+        except OSError:
+            log_text = ""
+
+    undefined_refs = len(re.findall(r"Reference `[^']+'[^\n]*undefined", log_text))
+    undefined_cites = len(re.findall(r"Citation `[^']+'[^\n]*undefined", log_text))
+    multiply_defined = len(
+        re.findall(r"multiply[- ]defined", log_text, flags=re.IGNORECASE)
+    )
+    missing_chars = len(re.findall(r"Missing character:", log_text))
+
+    overfull_pts = [
+        float(match.group(1))
+        for match in re.finditer(r"Overfull \\hbox \(([0-9.]+)pt too wide\)", log_text)
+    ]
+    severe_overfull = [pt for pt in overfull_pts if pt > max_overfull_pt]
+    max_observed_overfull = round(max(overfull_pts), 2) if overfull_pts else 0.0
+
+    literal_question_marks = 0
+    if pdf_path and os.path.isfile(pdf_path):
+        extracted_text = load_book(pdf_path, min_size=1) or ""
+        literal_question_marks = len(re.findall(r"\?\?", extracted_text))
+
+    failures: list[str] = []
+    if undefined_refs:
+        failures.append(f"undefined_references={undefined_refs}")
+    if undefined_cites:
+        failures.append(f"undefined_citations={undefined_cites}")
+    if multiply_defined:
+        failures.append(f"multiply_defined_labels={multiply_defined}")
+    if missing_chars:
+        failures.append(f"missing_characters={missing_chars}")
+    if severe_overfull:
+        failures.append(
+            f"severe_overfull_hboxes={len(severe_overfull)} (max={max_observed_overfull}pt > {max_overfull_pt}pt)"
+        )
+    if literal_question_marks:
+        failures.append(f"literal_question_marks={literal_question_marks}")
+
+    return {
+        "passed": len(failures) == 0,
+        "undefined_references": undefined_refs,
+        "undefined_citations": undefined_cites,
+        "multiply_defined_labels": multiply_defined,
+        "missing_characters": missing_chars,
+        "severe_overfull_hboxes": len(severe_overfull),
+        "max_overfull_pt": max_observed_overfull,
+        "overfull_threshold_pt": max_overfull_pt,
+        "literal_question_marks": literal_question_marks,
+        "failures": failures,
+    }
+
+
 def _stage_isolated_latex_sandbox(
     cwd: str, sandbox_dir: str, texfile_name: str
 ) -> None:

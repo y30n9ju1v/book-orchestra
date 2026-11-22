@@ -271,6 +271,41 @@ The handler delegates work to the service layer.
                     _write_final_markdown_export(sample_tex, markdown_path)
             self.assertFalse(os.path.exists(markdown_path))
 
+    def test_publication_quality_gate_catches_latex_and_pdf_defects(self):
+        from utils.pdf_utils import inspect_compiled_pdf_quality
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad_log = os.path.join(tmpdir, "bad.log")
+            with open(bad_log, "w", encoding="utf-8") as stream:
+                stream.write(
+                    "LaTeX Warning: Reference `fig:missing' on page 1 undefined.\n"
+                    "LaTeX Warning: Citation `Ghost2099' on page 2 undefined.\n"
+                    "LaTeX Warning: Label `eq:dup' multiply defined.\n"
+                    "Missing character: There is no à in font Foo!\n"
+                    "Overfull \\hbox (42.5pt too wide) in paragraph at lines 10--11\n"
+                )
+            with patch("utils.pdf_utils.load_book", return_value="See Figure ?? for details."):
+                bad_pdf = os.path.join(tmpdir, "bad.pdf")
+                open(bad_pdf, "wb").write(b"%PDF-1.4\n")
+                report = inspect_compiled_pdf_quality(bad_log, bad_pdf, max_overfull_pt=20.0)
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["undefined_references"], 1)
+            self.assertEqual(report["undefined_citations"], 1)
+            self.assertEqual(report["multiply_defined_labels"], 1)
+            self.assertEqual(report["missing_characters"], 1)
+            self.assertEqual(report["severe_overfull_hboxes"], 1)
+            self.assertEqual(report["literal_question_marks"], 1)
+
+            good_log = os.path.join(tmpdir, "good.log")
+            with open(good_log, "w", encoding="utf-8") as stream:
+                stream.write("Overfull \\hbox (4.2pt too wide) detected.\n")
+            with patch("utils.pdf_utils.load_book", return_value="Clean typeset book text."):
+                good_pdf = os.path.join(tmpdir, "good.pdf")
+                open(good_pdf, "wb").write(b"%PDF-1.4\n")
+                clean_report = inspect_compiled_pdf_quality(good_log, good_pdf, max_overfull_pt=20.0)
+            self.assertTrue(clean_report["passed"])
+            self.assertEqual(clean_report["failures"], [])
+
     def test_semantic_preview_preserves_korean_and_hides_latex_markup(self):
         from utils.pdf_utils import compile_latex, load_book
 

@@ -218,33 +218,79 @@ def latex_to_markdown(latex_text: str) -> str:
     else:
         body = text
 
-    # Remove comments (excluding escaped \%)
-    body = re.sub(r"(?<!\\)%[^\n]*", "", body)
-    body = body.replace(r"\maketitle", "")
-    body = body.replace(r"\tableofcontents", "")
-    body = body.replace(r"\frontmatter", "").replace(r"\mainmatter", "").replace(r"\backmatter", "")
-    body = body.replace(r"\clearpage", "\n").replace(r"\newpage", "\n").replace(r"\appendix", "\n# Appendix\n")
-
-    # Preserve code listings and verbatim blocks before inline regexes
+    # Preserve code listings and verbatim blocks BEFORE stripping LaTeX % comments
+    # (otherwise MLIR SSA values like %arg0/%0 and Bash ${VAR%.o} get stripped!).
     code_blocks = []
 
-    def _replace_lstlisting(match):
-        opts = match.group(1) or ""
-        code = match.group(2).strip("\n")
-        lang_match = re.search(r"language\s*=\s*([A-Za-z0-9_+-]+)", opts)
-        cap_match = re.search(r"caption\s*=\s*\{(.*?)\}", opts)
-        lang = lang_match.group(1).lower() if lang_match else ""
-        header = f"**Listing: {cap_match.group(1).strip()}**\n\n" if cap_match else ""
-        placeholder = f"__CODE_BLOCK_{len(code_blocks)}__"
-        code_blocks.append(f"{header}```{lang}\n{code}\n```")
-        return f"\n{placeholder}\n"
+    def _clean_inline_tex(s: str) -> str:
+        s = re.sub(r"\\allowbreak\b", "", s)
+        s = s.replace("{[}", "[").replace("{]}", "]")
+        for _ in range(3):
+            s = re.sub(r"\\texttt\{([^{}]*)\}", r"`\1`", s)
+            s = re.sub(r"\\textbf\{([^{}]*)\}", r"**\1**", s)
+            s = re.sub(r"\\(?:textit|emph)\{([^{}]*)\}", r"*\1*", s)
+        s = s.replace(r"\_", "_").replace(r"\%", "%").replace(r"\&", "&").replace(r"\,", " ")
+        return s.strip()
 
-    body = re.sub(
-        r"\\begin\{lstlisting\}(?:\[(.*?)\])?(.*?)\\end\{lstlisting\}",
-        _replace_lstlisting,
-        body,
-        flags=re.DOTALL,
-    )
+    def _extract_braced(s: str, start: int) -> tuple[str, int]:
+        """Extract balanced {...} content starting at s[start] == '{'."""
+        depth = 0
+        i = start
+        while i < len(s):
+            if s[i] == "{":
+                depth += 1
+            elif s[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return s[start + 1 : i], i + 1
+            i += 1
+        return s[start + 1 :], len(s)
+
+    def _replace_all_lstlistings(src: str) -> str:
+        out = []
+        pos = 0
+        while True:
+            m = re.search(r"\\begin\{lstlisting\}", src[pos:])
+            if not m:
+                out.append(src[pos:])
+                break
+            out.append(src[pos : pos + m.start()])
+            cur = pos + m.end()
+            opts = ""
+            if cur < len(src) and src[cur] == "[":
+                cur += 1
+                opt_start = cur
+                brace_depth = 0
+                while cur < len(src):
+                    if src[cur] == "{":
+                        brace_depth += 1
+                    elif src[cur] == "}":
+                        brace_depth -= 1
+                    elif src[cur] == "]" and brace_depth == 0:
+                        break
+                    cur += 1
+                opts = src[opt_start:cur]
+                cur += 1  # skip ']'
+            end_m = re.search(r"\\end\{lstlisting\}", src[cur:])
+            if not end_m:
+                out.append(src[pos + m.start() :])
+                break
+            code = src[cur : cur + end_m.start()].strip("\n")
+            lang_m = re.search(r"language\s*=\s*([A-Za-z0-9_+-]+)", opts)
+            lang = lang_m.group(1).lower() if lang_m else ""
+            cap_text = ""
+            cap_m = re.search(r"caption\s*=\s*\{", opts)
+            if cap_m:
+                cap_raw, _ = _extract_braced(opts, cap_m.end() - 1)
+                cap_text = _clean_inline_tex(cap_raw)
+            header = f"**Listing: {cap_text}**\n\n" if cap_text else ""
+            placeholder = f"__CODE_BLOCK_{len(code_blocks)}__"
+            code_blocks.append(f"{header}```{lang}\n{code}\n```")
+            out.append(f"\n{placeholder}\n")
+            pos = cur + end_m.end()
+        return "".join(out)
+
+    body = _replace_all_lstlistings(body)
 
     def _replace_verbatim(match):
         code = match.group(1).strip("\n")
@@ -258,6 +304,13 @@ def latex_to_markdown(latex_text: str) -> str:
         body,
         flags=re.DOTALL,
     )
+
+    # Remove LaTeX comments (excluding escaped \%) AFTER code blocks are protected
+    body = re.sub(r"(?<!\\)%[^\n]*", "", body)
+    body = body.replace(r"\maketitle", "")
+    body = body.replace(r"\tableofcontents", "")
+    body = body.replace(r"\frontmatter", "").replace(r"\mainmatter", "").replace(r"\backmatter", "")
+    body = body.replace(r"\clearpage", "\n").replace(r"\newpage", "\n").replace(r"\appendix", "\n# Appendix\n")
 
     # Callout boxes
     box_labels = {
@@ -282,12 +335,12 @@ def latex_to_markdown(latex_text: str) -> str:
 
         body = re.sub(pattern, _replace_box, body, flags=re.DOTALL)
 
-    # Structural headings
-    body = re.sub(r"\\part\*?\{(.*?)\}", r"\n# Part: \1\n", body)
-    body = re.sub(r"\\chapter\*?\{(.*?)\}", r"\n# \1\n", body)
-    body = re.sub(r"\\section\*?\{(.*?)\}", r"\n## \1\n", body)
-    body = re.sub(r"\\subsection\*?\{(.*?)\}", r"\n### \1\n", body)
-    body = re.sub(r"\\subsubsection\*?\{(.*?)\}", r"\n#### \1\n", body)
+    # Structural headings (support optional short title [...] and nested inline commands)
+    body = re.sub(r"\\part\*?(?:\[[^\]]*\])?\{(.*?)\}", r"\n# Part: \1\n", body)
+    body = re.sub(r"\\chapter\*?(?:\[[^\]]*\])?\{(.*?)\}", r"\n# \1\n", body)
+    body = re.sub(r"\\section\*?(?:\[[^\]]*\])?\{(.*?)\}", r"\n## \1\n", body)
+    body = re.sub(r"\\subsection\*?(?:\[[^\]]*\])?\{(.*?)\}", r"\n### \1\n", body)
+    body = re.sub(r"\\subsubsection\*?(?:\[[^\]]*\])?\{(.*?)\}", r"\n#### \1\n", body)
     body = re.sub(r"\\paragraph\*?\{(.*?)\}", r"\n**\1** ", body)
 
     # Abstract
@@ -298,18 +351,72 @@ def latex_to_markdown(latex_text: str) -> str:
         flags=re.DOTALL,
     )
 
-    # Figures
+    # Figures (distinguish raster \includegraphics vs TikZ diagrams)
     def _replace_figure(m):
         inner = m.group(1)
         inc = re.search(r"\\includegraphics(?:\[.*?\])?\{(.*?)\}", inner)
-        cap = re.search(r"\\caption\{(.*?)\}", inner, re.DOTALL)
-        path = inc.group(1).strip() if inc else "figure"
-        caption = cap.group(1).strip() if cap else path
-        return f"\n![{caption}]({path})\n*{caption}*\n"
+        cap_m = re.search(r"\\caption\{", inner)
+        caption = ""
+        if cap_m:
+            cap_raw, _ = _extract_braced(inner, cap_m.end() - 1)
+            caption = _clean_inline_tex(cap_raw)
+        if inc:
+            path = inc.group(1).strip()
+            cap_out = caption or path
+            return f"\n![{cap_out}]({path})\n*{cap_out}*\n"
+        if caption:
+            return f"\n> **[Diagram]** {caption}\n"
+        return "\n"
 
     body = re.sub(
         r"\\begin\{figure\*?\}(?:\[.*?\])?(.*?)\\end\{figure\*?\}",
         _replace_figure,
+        body,
+        flags=re.DOTALL,
+    )
+
+    # Tables -> GitHub Flavored Markdown tables
+    def _replace_table(m):
+        inner = m.group(1)
+        cap_m = re.search(r"\\caption\{", inner)
+        caption = ""
+        if cap_m:
+            cap_raw, _ = _extract_braced(inner, cap_m.end() - 1)
+            caption = _clean_inline_tex(cap_raw)
+        tab_m = re.search(
+            r"\\begin\{(?:tabularx|tabular)\}(?:\{[^}]*\})?(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})?(.*?)\\end\{(?:tabularx|tabular)\}",
+            inner,
+            flags=re.DOTALL,
+        )
+        if not tab_m:
+            return f"\n**Table:** {caption}\n" if caption else "\n"
+        tab_body = tab_m.group(1)
+        tab_body = re.sub(r"\\(?:toprule|midrule|bottomrule|hline|addlinespace)\b(?:\[[^\]]*\])?", "", tab_body)
+        # Split into rows on \\ (not escaped \\\\)
+        raw_rows = [r.strip() for r in re.split(r"\\\\", tab_body) if r.strip()]
+        rows = []
+        for raw_row in raw_rows:
+            if "&" not in raw_row:
+                continue
+            cells = [_clean_inline_tex(c).replace("|", "\\|").replace("\n", " ") for c in re.split(r"(?<!\\)&", raw_row)]
+            if any(cells):
+                rows.append(cells)
+        if not rows:
+            return f"\n**Table:** {caption}\n" if caption else "\n"
+        ncols = max(len(r) for r in rows)
+        norm_rows = [r + [""] * (ncols - len(r)) for r in rows]
+        md_lines = []
+        if caption:
+            md_lines.append(f"**Table: {caption}**\n")
+        md_lines.append("| " + " | ".join(norm_rows[0]) + " |")
+        md_lines.append("| " + " | ".join(["---"] * ncols) + " |")
+        for r in norm_rows[1:]:
+            md_lines.append("| " + " | ".join(r) + " |")
+        return "\n" + "\n".join(md_lines) + "\n"
+
+    body = re.sub(
+        r"\\begin\{table\*?\}(?:\[.*?\])?(.*?)\\end\{table\*?\}",
+        _replace_table,
         body,
         flags=re.DOTALL,
     )
@@ -326,15 +433,25 @@ def latex_to_markdown(latex_text: str) -> str:
     body = re.sub(r"\\end\{(?:itemize|enumerate)\}", "", body)
     body = re.sub(r"\\item\s*", "- ", body)
 
-    # Inline formatting & citations
+    # Inline formatting & citations (run thrice to handle nested \textbf{\texttt{...}})
+    body = re.sub(r"\\allowbreak\b", "", body)
     body = re.sub(r"\\label\{.*?\}", "", body)
-    body = re.sub(r"\\(?:cite|citet|citep)\{(.*?)\}", r"[\1]", body)
-    body = re.sub(r"\\(?:cref|Cref|ref)\{(.*?)\}", r"(\1)", body)
-    body = re.sub(r"\\textbf\{(.*?)\}", r"**\1**", body)
-    body = re.sub(r"\\(?:textit|emph)\{(.*?)\}", r"*\1*", body)
-    body = re.sub(r"\\(?:texttt|verb\|)(.*?)(?:\}|\|)", r"`\1`", body)
+    body = re.sub(r"\\markboth\{[^}]*\}\{[^}]*\}", "", body)
+    body = re.sub(r"\\lstset\{[^}]*\}", "", body)
+    body = re.sub(r"\\(?:small|footnotesize|scriptsize|tiny|normalsize|large|Large)\b", "", body)
+    body = re.sub(r"\\(?:renewcommand|setlength)\{[^}]*\}\{[^}]*\}", "", body)
+    body = re.sub(r"~?\\(?:cite|citet|citep)\{(.*?)\}", r" [\1]", body)
+    body = re.sub(r"\(\s*\\(?:cref|Cref|ref|eqref)\{(.*?)\}\s*\)", r"(\1)", body)
+    body = re.sub(r"~?\\(?:cref|Cref|ref|eqref)\{(.*?)\}", r" `\1`", body)
+    for _ in range(3):
+        body = re.sub(r"\\texttt\{([^{}]*)\}", r"`\1`", body)
+        body = re.sub(r"\\verb\|([^|]*)\|", r"`\1`", body)
+        body = re.sub(r"\\textbf\{([^{}]*)\}", r"**\1**", body)
+        body = re.sub(r"\\(?:textit|emph)\{([^{}]*)\}", r"*\1*", body)
     body = re.sub(r"\\href\{(.*?)\}\{(.*?)\}", r"[\2](\1)", body)
     body = re.sub(r"\\url\{(.*?)\}", r"\1", body)
+    body = body.replace(r"\_", "_").replace(r"\%", "%").replace(r"\&", "&").replace(r"\,", " ").replace("~", " ")
+    body = body.replace("``", '"').replace("''", '"')
 
     # Tables basic cleanup
     body = re.sub(r"\\(?:toprule|midrule|bottomrule|hline)", "", body)
@@ -362,11 +479,13 @@ def latex_to_markdown(latex_text: str) -> str:
     header_lines = []
     if title_match:
         title_clean = re.sub(r"\\\\", " — ", title_match.group(1).strip())
-        title_clean = re.sub(r"\\[a-zA-Z]+\{([^}]*)\}", r"\1", title_clean)
+        for _ in range(3):
+            title_clean = re.sub(r"\\[a-zA-Z]+\{([^{}]*)\}", r"\1", title_clean)
+        title_clean = re.sub(r"\\[a-zA-Z]+\s*", "", title_clean).replace("{", "").replace("}", "")
         header_lines.append(f"# {title_clean.strip()}\n")
     if author_match:
         author_clean = re.sub(r"\\\\", ", ", author_match.group(1).strip())
-        author_clean = re.sub(r"\\[a-zA-Z]+\s*", "", author_clean)
+        author_clean = re.sub(r"\\[a-zA-Z]+\s*", "", author_clean).replace("{", "").replace("}", "")
         header_lines.append(f"**Author:** {author_clean.strip()}\n")
 
     result = "\n".join(header_lines) + "\n" + body
@@ -1113,17 +1232,35 @@ def inspect_compiled_pdf_quality(
     log_path: str | None,
     pdf_path: str | None,
     *,
+    tex_path: str | None = None,
     max_overfull_pt: float = 20.0,
     max_overfull_vbox_pt: float = 20.0,
 ) -> dict:
     """Audit compiled TeX log and PDF text for publication-blocking defects."""
+    import hashlib
+
+    def _sha256(path: str | None) -> str | None:
+        if not path or not os.path.isfile(path):
+            return None
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
     log_text = ""
+    stale_log = False
     if log_path and os.path.isfile(log_path):
         try:
             with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
                 log_text = log_file.read()
         except OSError:
             log_text = ""
+        if tex_path and os.path.isfile(tex_path):
+            if os.path.getmtime(log_path) + 1.0 < os.path.getmtime(tex_path):
+                stale_log = True
+    else:
+        stale_log = True
 
     undefined_refs = len(re.findall(r"Reference `[^']+'[^\n]*undefined", log_text))
     undefined_cites = len(re.findall(r"Citation `[^']+'[^\n]*undefined", log_text))
@@ -1150,9 +1287,16 @@ def inspect_compiled_pdf_quality(
     )
 
     literal_question_marks = 0
+    markdown_bold_leaks = 0
     if pdf_path and os.path.isfile(pdf_path):
         extracted_text = load_book(pdf_path, min_size=1) or ""
         literal_question_marks = len(re.findall(r"\?\?", extracted_text))
+        markdown_bold_leaks = len(
+            re.findall(
+                r"(?<!\w)\*\*[^\s*\d][^*\n]{0,80}[^\s*]\*\*(?!\w)",
+                extracted_text,
+            )
+        )
 
     failures: list[str] = []
     if undefined_refs:
@@ -1175,9 +1319,16 @@ def inspect_compiled_pdf_quality(
         )
     if literal_question_marks:
         failures.append(f"literal_question_marks={literal_question_marks}")
+    if markdown_bold_leaks:
+        failures.append(f"markdown_bold_leaks={markdown_bold_leaks}")
+    if stale_log:
+        failures.append("stale_or_missing_log=True")
 
     return {
         "passed": len(failures) == 0,
+        "stale_log": stale_log,
+        "tex_sha256": _sha256(tex_path),
+        "pdf_sha256": _sha256(pdf_path),
         "undefined_references": undefined_refs,
         "undefined_citations": undefined_cites,
         "multiply_defined_labels": multiply_defined,
@@ -1190,6 +1341,7 @@ def inspect_compiled_pdf_quality(
         "max_overfull_vbox_pt": max_observed_overfull_vbox,
         "overfull_vbox_threshold_pt": max_overfull_vbox_pt,
         "literal_question_marks": literal_question_marks,
+        "markdown_bold_leaks": markdown_bold_leaks,
         "failures": failures,
     }
 
@@ -1247,6 +1399,13 @@ def compile_latex(
     source_tex = os.path.join(cwd, f"{texfile_name}.tex")
     if os.path.exists(source_pdf):
         os.remove(source_pdf)
+    for stale_ext in (".log", ".aux", ".toc"):
+        stale_path = os.path.join(cwd, f"{texfile_name}{stale_ext}")
+        if os.path.exists(stale_path):
+            try:
+                os.remove(stale_path)
+            except OSError:
+                pass
     if os.path.exists(pdf_file):
         os.remove(pdf_file)
     if preview_pdf_file and os.path.exists(preview_pdf_file):
@@ -1435,6 +1594,9 @@ def compile_latex(
                 try:
                     os.makedirs(os.path.dirname(os.path.abspath(pdf_file)), exist_ok=True)
                     shutil.move(sbx_pdf, pdf_file)
+                    sbx_log = os.path.join(sbx_dir, f"{texfile_name}.log")
+                    if os.path.exists(sbx_log):
+                        shutil.copy2(sbx_log, os.path.join(cwd, f"{texfile_name}.log"))
                     _LAST_COMPILE_STATE.render_mode = engine
                     return True
                 except Exception:
